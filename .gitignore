@@ -1,0 +1,17 @@
+.build/
+.swiftpm/
+dist/
+.DS_Store
+artifacts/
+default.profraw
+__pycache__/
+*.pyc
+artifacts/runtime/
+artifacts/**/.build/
+artifacts/**/*-build/
+artifacts/**/*.sqlite*
+artifacts/**/*.db*
+artifacts/cloud/CloudDriveProbe
+*.xcuserstate
+
+Vendor/*-upstream/

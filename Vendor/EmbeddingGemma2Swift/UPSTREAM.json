@@ -1,0 +1,20 @@
+{
+  "repository": "https://github.com/Obscyra-app/EmbeddingGemma2Swift",
+  "revision": "2c7815fc9e2f6d99df05b3cd259f6086ed65e9cc",
+  "modifications": [
+    "Package.swift tools-version6.3\u21926.2 for installed Xcode26.3; actual compatibility must be compiled and verified",
+    "MLX Swift exact0.32.3\u21920.31.4:0.32 requiresSwift6.3 experimentalCGen; verify native numerical/runtime compatibility on installed6.2.4",
+    "AudioProcessor.swift frequencies expression split with explicit Double types, identical operation order, to avoid Swift6.2 type-check timeout; audio feature out of current stage",
+    "MioEmbedWorker native persistent newline-JSON serving target; query/document prefixes delegated to SDK, vision input is locally prepared opaque image"
+  ],
+  "original_source_sha256": {
+    "Sources/EmbeddingGemma2CLI/CLI.swift": "91b751b8fe750807e5e38e191ba977a1bd0d2793e41d5f7e8471648cdf3b3e6b",
+    "Sources/EmbeddingGemma2/Model.swift": "5317b84c597af0a97b585fb243561e1f8a2384ae747031363dfbba5f2b1bfe98",
+    "Sources/EmbeddingGemma2/VisionModel.swift": "37b02536e0fca1085e3a7b3113c4b292777e75ed1030dcb2d30e87c132169726",
+    "Sources/EmbeddingGemma2/Quantization.swift": "ced9a97fc58f8dd316cbee0f2ed4dfdd5da3dc660098cd0b4ee93439f104d825",
+    "Sources/EmbeddingGemma2/Encoder.swift": "c0c7d7b3c57334db8725939bb63afaf7dacf524d99a04e04fe16da339069d0e2",
+    "Sources/EmbeddingGemma2/ImageProcessor.swift": "fbd5968c91652ec2bb48e5f5edd17b9ce6ed6c4a10790f37c055a5574942f731",
+    "Sources/EmbeddingGemma2/AudioModel.swift": "49b53ca21324e996ff5609022fb83b99e73f7412a85a34daceef4ba7bd531286",
+    "Sources/EmbeddingGemma2/AudioProcessor.swift": "ddefe34a324e7c2650f50d2bb7c72a8c6d4085cfdd8e02d37c13922949d6f74c"
+  }
+}
