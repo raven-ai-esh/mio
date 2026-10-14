@@ -103,7 +103,13 @@ import UniformTypeIdentifiers
     var allNotes: [JSONValue] { snapshot["notes"].items.filter { !$0["deleted"].flag && !$0["redacted"].flag && !$0["purged"].flag && $0["status"].text != "purged" } }
     var deletedNotes: [JSONValue] { snapshot["notes"].items.filter { $0["deleted"].flag && !$0["redacted"].flag && !$0["purged"].flag && $0["status"].text != "purged" } }
     var connections: [JSONValue] { snapshot["connections"].items.filter { !$0["deleted"].flag } }
-    var sessions: [JSONValue] { snapshot["sessions"].items.filter { !$0["deleted"].flag && !$0["purged"].flag && $0["source"].text == "memory_operations_v1" } }
+    var sessions: [JSONValue] {
+        snapshot["sessions"].items.filter { !$0["deleted"].flag && !$0["purged"].flag && $0["source"].text == "memory_operations_v1" }.sorted {
+            let first = MioFormat.timestamp($0["opened_at"]) ?? .distantPast
+            let second = MioFormat.timestamp($1["opened_at"]) ?? .distantPast
+            return first == second ? $0.id < $1.id : first > second
+        }
+    }
     var profiles: [JSONValue] { snapshot["profiles"].items }
     var links: [JSONValue] { snapshot["links"].items.filter { !$0["deleted"].flag } }
     var selectedSpaceValue: JSONValue { spaces.first { $0.id == selectedSpace } ?? .null }

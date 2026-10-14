@@ -83,7 +83,7 @@ public enum MCPRunner {
                 try send(rpcResult(id: id, result: .object([
                     "protocolVersion": .string(chosen),
                     "capabilities": .object(["tools": .object(["listChanged": .bool(false)])]),
-                    "serverInfo": .object(["name": .string("mio"), "version": .string("0.4.0")]),
+                    "serverInfo": .object(["name": .string("mio"), "version": .string("0.4.1")]),
                     "instructions": .string("Use read(kind=spaces) without id to discover authorized space names, IDs, read/write permissions and default_space_id. Choose by name, then use its ID in search.space_ids or capture.space_id; duplicate names remain distinct IDs. Search notes and memory interaction history first. History records Mio searches, reads and changes, not your chats. Read exact evidence before capturing or revising. Preserve source IDs and expected revisions. Spaces are scoped by your profile. This MCP connection has its own transport session and is not identified as a Codex chat.")
                 ])), output: output)
                 continue

@@ -54,9 +54,10 @@ extension JSONValue {
 enum MioFormat {
     static let iso = ISO8601DateFormatter()
     static let fractional: ISO8601DateFormatter = { let value = ISO8601DateFormatter(); value.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return value }()
+    static func timestamp(_ value: JSONValue) -> Date? { iso.date(from: value.text) ?? fractional.date(from: value.text) }
     static func date(_ value: JSONValue, locale: Locale = .current) -> String {
         let raw = value.text
-        if let date = iso.date(from: raw) ?? fractional.date(from: raw) { return date.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(locale)) }
+        if let date = timestamp(value) { return date.formatted(Date.FormatStyle(date: .abbreviated, time: .shortened).locale(locale)) }
         return raw.isEmpty ? "—" : String(raw.prefix(16)).replacingOccurrences(of: "T", with: " ")
     }
     static func color(_ value: String) -> Color {
