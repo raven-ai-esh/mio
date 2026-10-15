@@ -392,3 +392,15 @@
 "Убрать подключение" = "Remove connection";
 
 "Описание" = "Description";
+
+"Палитра…" = "Palette…";
+"Цвет HEX" = "HEX color";
+"Введите цвет в формате #RRGGBB." = "Enter a color in #RRGGBB format.";
+"Перетащите между строками для сортировки или на середину строки для вложения." = "Drag between rows to reorder, or onto the middle of a row to nest.";
+"Перетащите сюда пространство, чтобы вернуть его на верхний уровень." = "Drop a space here to move it back to the top level.";
+"Не удалось перенести пространство. Повторите перетаскивание из этого окна." = "Couldn't move the space. Drag it again from this window.";
+"Положение пространства изменилось. Повторите перетаскивание." = "The space position changed. Drag it again.";
+"Пространство перемещено" = "Space moved";
+"The space moved during the drag. Try again." = "The space moved during the drag. Try again.";
+"The insertion position changed. Try again." = "The insertion position changed. Try again.";
+"A space cannot be nested inside itself or its descendants" = "A space cannot be nested inside itself or its descendants";

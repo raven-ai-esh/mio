@@ -55,3 +55,13 @@ Interface strings ship in an executable resource bundle with English and Russian
 | MioEmbeddings | Model verification/download, worker IPC and background indexing. |
 | MioCloud | Optional file-provider record exchange with explicit pending/uploaded/error states. |
 | MioBench | Synthetic performance and retrieval acceptance helpers. |
+
+## Space colors and ordering
+
+Spaces store a named base color or an opaque, device-independent sRGB `#RRGGBB` value. The native palette and exact HEX input share this representation with the sidebar, filters and graph. Color editing stays local to the properties sheet until Save.
+
+Sibling order is optional `sort_order` metadata on ordinary space records. Legacy spaces fall back to name and ID; the organizational tree uses the persisted positions before that fallback. The local-owner `space.move` operation validates the source, destination, sibling anchor and source parent, rejects cycles, and commits the new parent and sibling positions in one transaction. Moving a parent carries its children through the hierarchy; note ownership, content revisions and profile grants do not change. Dropping on All memory appends to the root.
+
+## Background queue checks
+
+`sync.pending` resolves missing record references through SQLite existence checks against indexed entity IDs. It does not deserialize all historical note/event bodies or read full note bodies for each graph edge. Validation and application still use `validateDocument` and `canApply`; unresolved references remain pending across restart and sparse replication. Initialization and error-status checks for iCloud run outside the main actor. Unchanged index and cloud status do not publish redundant workspace updates.

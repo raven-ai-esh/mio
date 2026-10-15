@@ -1,44 +1,11 @@
 import SwiftUI
-import UniformTypeIdentifiers
+import AppKit
 import MioCore
 
-struct SpaceSidebarRow: View {
-    @EnvironmentObject var model: AppModel
-    let entry: MioSpaceTree.Entry
-    @State private var dropTargeted=false
-    private var space: JSONValue { entry.space }
-    private var count: Int { let ids=model.spaceTree.subtreeIDs(of:entry.id);return model.allNotes.filter{ids.contains($0["space_id"].text)}.count }
-    private var connected: Int { model.connections.filter{$0["from_space_id"].text == entry.id || $0["to_space_id"].text == entry.id}.count }
-    var body: some View {
-        Button {
-            let graphVisible=model.tab == "graph";model.selectSpace(entry.id)
-            if graphVisible { model.graph.focusSpace(entry.id) }
-            else { model.focusNotesSpace(entry.id);model.tab="notes" }
-        } label: {
-            HStack(spacing:7) {
-                if entry.depth>0 { Image(systemName:"arrow.turn.down.right").font(.caption2).foregroundStyle(.tertiary) }
-                Circle().fill(MioFormat.color(space["color"].text)).frame(width:9,height:9)
-                Text(space["name"].text).lineLimit(2)
-                Spacer(minLength:2)
-                if connected>0 { Image(systemName:"link").font(.caption2).foregroundStyle(.secondary).help(model.l("Подключений: %@",String(connected))) }
-                Text("\(count)").font(.caption).foregroundStyle(.secondary)
-            }.padding(.leading,CGFloat(min(entry.depth,8))*12).frame(maxWidth:.infinity,alignment:.leading).contentShape(Rectangle())
-        }.buttonStyle(.plain).accessibilityIdentifier("space.\(entry.id)")
-            .help(space["description"].text.isEmpty ? model.spacePath(entry.id):space["description"].text)
-            .listRowBackground(dropTargeted ? Color.accentColor.opacity(0.25):model.selectedSpace == entry.id ? Color.accentColor.opacity(0.10):.clear)
-            .contextMenu {
-                Button(model.l("Изменить пространство…")) { model.editingSpace=space;model.showSpaceSheet=true }
-                Button(model.l("Создать дочернее пространство…")) { model.editingSpace = .object(["parent_id":.string(entry.id)]);model.showSpaceSheet=true }
-                Menu(model.l("Поместить в пространство")) {
-                    Button(model.l("Без родительского пространства")) { Task { await model.setSpaceParent(entry.id,parent:"") } }
-                    ForEach(model.spaceEntries.filter{!model.spaceTree.subtreeIDs(of:entry.id).contains($0.id)}) { parent in
-                        Button(model.spacePath(parent.id)) { Task { await model.setSpaceParent(entry.id,parent:parent.id) } }
-                    }
-                }
-                Divider()
-                Button(model.l("Подключить пространство…")) { model.connectionSourceSpaceID=entry.id;model.showConnectionSheet=true }
-            }
-            .onDrop(of:[MioNoteDrag.contentType],isTargeted:$dropTargeted) { model.acceptNoteDrop($0,destination:entry.id) }
+enum MioSpacePalette {
+    static let baseColors=["blue","teal","green","mint","cyan","indigo","purple","pink","red","orange","yellow","brown","gray"]
+    static func isValid(_ color: String, original: String?) -> Bool {
+        baseColors.contains(color) || MioSpaceRGB(hex:color) != nil || (!color.isEmpty && color==original)
     }
 }
 
@@ -52,6 +19,12 @@ struct SpaceSheet: View {
     @State private var parent=""
     @FocusState private var nameFocused: Bool
     private var creating: Bool { space.id.isEmpty }
+    private var baseColors: [String] { MioSpacePalette.baseColors }
+    private var validColor: Bool { MioSpacePalette.isValid(color,original:creating ? nil:space["color"].text) }
+    private var customColor: Binding<Color> { Binding(get:{MioFormat.color(color)},set:{ value in
+        guard let rgb=NSColor(value).usingColorSpace(.sRGB) else { return }
+        color=MioSpaceRGB(red:rgb.redComponent,green:rgb.greenComponent,blue:rgb.blueComponent).hex
+    }) }
     private var connections: [JSONValue] { model.connections.filter{$0["from_space_id"].text == space.id || $0["to_space_id"].text == space.id} }
     var body: some View {
         VStack(alignment:.leading,spacing:18) {
@@ -67,13 +40,21 @@ struct SpaceSheet: View {
                     ForEach(model.spaceEntries.filter{creating || !model.spaceTree.subtreeIDs(of:space.id).contains($0.id)}) { entry in Text(model.spacePath(entry.id)).tag(entry.id) }
                 }.accessibilityIdentifier("space.parent")
                 Text(model.l("Вложенность упорядочивает память и фильтры. Доступ агента задаётся подключениями отдельно.")).font(.caption).foregroundStyle(.secondary)
-                HStack(spacing:12) {
+                VStack(alignment:.leading,spacing:12) {
                     Text(model.l("Цвет")).font(.caption).foregroundStyle(.secondary)
-                    ForEach(["blue","teal","green","purple","orange","pink"],id:\.self) { item in
+                    LazyVGrid(columns:Array(repeating:GridItem(.fixed(28),spacing:8),count:7),alignment:.leading,spacing:10) {
+                    ForEach(baseColors,id:\.self) { item in
                         Button { color=item } label: {
-                            Circle().fill(MioFormat.color(item)).frame(width:25,height:25).overlay { if item == color { Image(systemName:"checkmark").foregroundStyle(.white).font(.caption.weight(.bold)) } }
+                            Circle().fill(MioFormat.color(item)).frame(width:25,height:25).overlay { if item == color { Image(systemName:"checkmark").foregroundStyle(item=="yellow" || item=="mint" ? .black:.white).font(.caption.weight(.bold)) } }
                         }.buttonStyle(.plain).accessibilityLabel(model.l("Цвет %@",item)).accessibilityIdentifier("space.color.\(item)")
                     }
+                    }
+                    HStack {
+                        ColorPicker(model.l("Палитра…"),selection:customColor,supportsOpacity:false).accessibilityIdentifier("space.color.custom")
+                        Spacer()
+                        TextField("",text:Binding(get:{color.hasPrefix("#") ? color:""},set:{color=$0.trimmingCharacters(in:.whitespacesAndNewlines).uppercased()}),prompt:Text("#RRGGBB")).labelsHidden().textFieldStyle(.roundedBorder).font(.system(.caption,design:.monospaced)).frame(width:110).accessibilityLabel(model.l("Цвет HEX")).accessibilityIdentifier("space.color.hex")
+                    }
+                    if !validColor { Text(model.l("Введите цвет в формате #RRGGBB.")).font(.caption).foregroundStyle(.red) }
                 }
             }.formStyle(.grouped)
             if !creating {
@@ -96,7 +77,7 @@ struct SpaceSheet: View {
             }
             HStack {
                 Spacer();Button(model.l("Отмена")) { dismiss() }.keyboardShortcut(.cancelAction)
-                Button(model.l(creating ? "Создать":"Сохранить")) { Task { if await model.saveSpaceDetails(id:space.id,name:name.trimmingCharacters(in:.whitespacesAndNewlines),description:details,color:color,parent:parent) { dismiss() } } }.buttonStyle(.borderedProminent).disabled(model.busy || name.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty).keyboardShortcut(.defaultAction).accessibilityIdentifier("space.save")
+                Button(model.l(creating ? "Создать":"Сохранить")) { Task { if await model.saveSpaceDetails(id:space.id,name:name.trimmingCharacters(in:.whitespacesAndNewlines),description:details,color:color,parent:parent) { dismiss() } } }.buttonStyle(.borderedProminent).disabled(model.busy || name.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || !validColor).keyboardShortcut(.defaultAction).accessibilityIdentifier("space.save")
             }
         }.padding(24).frame(width:500).onAppear { name=space["name"].text;details=space["description"].text;color=space["color"].text.isEmpty ? "blue":space["color"].text;parent=space["parent_id"].text;nameFocused=true }
     }

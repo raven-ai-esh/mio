@@ -80,7 +80,8 @@ import MioCore
         guard mode == .memory || force else { return }
         let newNodes = notes.map(MemoryGraphNode.init).sorted { $0.id < $1.id }, ids = Set(newNodes.map(\.id))
         let newEdges = links.map(MemoryGraphEdge.init).filter { ids.contains($0.from) && ids.contains($0.to) }.sorted { $0.id < $1.id }
-        nodes = newNodes; edges = newEdges
+        if nodes != newNodes { nodes = newNodes }
+        if edges != newEdges { edges = newEdges }
         fileOwners = [:]
         for note in notes { for file in note["file_ids"].items { fileOwners[file.text] = note.id } }
         let signature = MemoryGraphLayout.signature(nodes:newNodes,edges:newEdges)

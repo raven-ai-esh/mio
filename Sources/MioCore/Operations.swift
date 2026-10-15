@@ -9,6 +9,7 @@ extension MioStore {
         case "snapshot": return try snapshot(s,projection:p.string("projection","full"))
         case "space.create": return try saveSpace(p,s,creating:true)
         case "space.rename", "space.update": return try saveSpace(p,s,creating:false)
+        case "space.move": return try moveSpace(p,s)
         case "space.delete":
             let id = try p.required("space_id"); try requireSpace(id,s,write:true)
             var d = try entity("space",id)!.objectValue
@@ -72,7 +73,7 @@ extension MioStore {
         case "replica.merge": return try mergeDocument(p["document"] ?? .null,restore:false)
         case "sync.pending":
             let pending = try db.rows("SELECT records.id,records.json FROM outbox JOIN records ON records.id=outbox.record_id ORDER BY records.id").map { row -> JSONValue in .object(["id":.string(row["id"]!),"content_hash":.string(hash(try decode(row["json"]!).encoded()))]) }
-            let deferred = try db.rows("SELECT json FROM records").map { try decode($0["json"]!) }.filter { try !canApply($0) }.count
+            let deferred = try pendingDependencyCount()
             return .object(["records":.array(pending),"record_ids":.array(pending.map { $0["id"] }),"count":.number(Double(pending.count)),"pending_dependencies":.number(Double(deferred))])
         case "sync.queue":
             let deliveries = p["records"]?.arrayValue ?? []; var queued = 0, rejected = 0

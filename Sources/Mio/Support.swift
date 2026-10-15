@@ -61,7 +61,8 @@ enum MioFormat {
         return raw.isEmpty ? "—" : String(raw.prefix(16)).replacingOccurrences(of: "T", with: " ")
     }
     static func color(_ value: String) -> Color {
-        switch value { case "green": return .green; case "purple": return .purple; case "orange": return .orange; case "pink": return .pink; case "teal": return .teal; default: return .blue }
+        if let rgb=MioSpaceRGB(hex:value) { return Color(.sRGB,red:rgb.red,green:rgb.green,blue:rgb.blue,opacity:1) }
+        switch value { case "red":return .red;case "yellow":return .yellow;case "cyan":return .cyan;case "indigo":return .indigo;case "mint":return .mint;case "brown":return .brown;case "gray":return .gray;case "green": return .green; case "purple": return .purple; case "orange": return .orange; case "pink": return .pink; case "teal": return .teal; default: return .blue }
     }
     static func short(_ value: String, max: Int = 120) -> String { String(value.replacingOccurrences(of: "\n", with: " ").prefix(max)) }
     static func status(_ value: String) -> String {

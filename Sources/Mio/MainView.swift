@@ -23,12 +23,7 @@ struct MainView: View {
                     navigation("activity", model.l("Журнал изменений"), "waveform.path")
                     navigation("deleted", model.l("Удалённые заметки"), "trash", count: model.deletedNotes.count)
                 }
-                Section(model.l("Пространства")) {
-                    Button { model.selectSpace(""); if model.tab == "graph" { model.graph.showAllSpaces() } else if model.tab == "notes" { model.showAllNotesSpaces() } } label: { Label(model.l("Вся память"), systemImage: "square.grid.2x2").frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }.buttonStyle(.plain)
-                        .listRowBackground(model.selectedSpace.isEmpty ? Color.accentColor.opacity(0.10) : .clear)
-                    ForEach(model.spaceEntries) { entry in SpaceSidebarRow(entry:entry) }
-                    Button { model.editingSpace = .null;model.showSpaceSheet = true } label: { Label(model.l("Новое пространство"), systemImage: "plus").frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle()) }.buttonStyle(.plain).foregroundStyle(.secondary).accessibilityIdentifier("space.create")
-                }
+                Section(model.l("Пространства")) { SpacesOutlineSection() }
                 Section(model.l("Подключения")) {
                     navigation("agents", model.l("Codex и агенты"), "terminal")
                     navigation("sync", model.l("Синхронизация"), "icloud")

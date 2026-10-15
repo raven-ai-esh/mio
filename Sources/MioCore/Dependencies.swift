@@ -1,6 +1,31 @@
 import Foundation
 
 extension MioStore {
+    /// Count unresolved references with indexed existence checks. Validation is
+    /// still performed by validateDocument/canApply when records are imported.
+    /// Queue status must not decode every historical body (or the full note
+    /// behind both ends of every graph edge) while holding the store lock.
+    func pendingDependencyCount() throws -> Int {
+        // Match JSONValue.stringValue/arrayValue/boolValue exactly, including
+        // sparse legacy records with optional fields of another JSON type.
+        func ref(_ key: String) -> String { "(CASE WHEN json_type(r.json,'$.data.\(key)')='text' THEN json_extract(r.json,'$.data.\(key)') ELSE '' END)" }
+        func member(_ name: String) -> String { "(CASE WHEN \(name).type='text' THEN \(name).value ELSE '' END)" }
+        func missing(_ kind: String, _ id: String) -> String { "NOT EXISTS (SELECT 1 FROM entities e WHERE e.kind='\(kind)' AND e.id=\(id))" }
+        let missingSpace=missing("space",ref("space_id"))
+        let clauses=[
+            "(r.kind IN ('revision','session','session.restore','event','attachment') AND \(missingSpace))",
+            "(r.kind IN ('note.move','note.assets') AND (\(missing("note","r.entity_id")) OR \(missingSpace) OR (json_type(r.json,'$.data.asset_ids')='array' AND EXISTS (SELECT 1 FROM json_each(r.json,'$.data.asset_ids') a WHERE \(missing("attachment",member("a")))))))",
+            "(r.kind='note.assets' AND \(missing("revision",ref("revision_id"))))",
+            "(r.kind='note.move' AND json_type(r.json,'$.data.asset_revision_id')='text' AND \(missing("revision",ref("asset_revision_id"))))",
+            "(r.kind='revision' AND json_type(r.json,'$.data.parent_ids')='array' AND EXISTS (SELECT 1 FROM json_each(r.json,'$.data.parent_ids') p WHERE \(missing("revision",member("p")))))",
+            "(r.kind='attachment' AND \(ref("kind"))='pinned_asset' AND \(missing("note",ref("note_id"))))",
+            "(r.kind='attachment' AND \(ref("kind"))='memory_file' AND \(missing("revision",ref("captured_revision_id"))))",
+            "(r.kind='event' AND (\(missing("session",ref("session_id"))) OR (\(ref("kind"))='memory_operation' AND \(ref("phase"))='delivery' AND coalesce(json_type(r.json,'$.data.purged'),'null')!='true' AND \(missing("event",ref("execution_end_event_id"))))))",
+            "(r.kind='link' AND (\(missing("note",ref("from_note_id"))) OR \(missing("note",ref("to_note_id")))))",
+            "(r.kind='connection' AND (\(missing("space",ref("from_space_id"))) OR \(missing("space",ref("to_space_id")))))"
+        ]
+        return Int(try db.rows("SELECT count(*) AS n FROM records r WHERE "+clauses.joined(separator:" OR ")).first?["n"] ?? "0") ?? 0
+    }
     func canApply(_ r: JSONValue) throws -> Bool {
         let kind = r["kind"].stringValue ?? "", data = r["data"]
         if ["revision","session","session.restore","event","attachment"].contains(kind), try entity("space",data["space_id"].stringValue ?? "") == nil { return false }

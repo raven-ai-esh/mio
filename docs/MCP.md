@@ -10,7 +10,7 @@ Call read with:
 {"kind":"spaces"}
 ```
 
-The catalog includes spaces[{id,name,description,color,parent_id,child_space_ids,subtree_space_ids,path,can_read,can_write}], default_space_id, total_count, offset, limit and next_offset. Page size defaults to 50 and is capped at 200. Only authorized live spaces appear; duplicate names have separate IDs. Use the chosen ID for subsequent operations. `connections` lists visible directed access connections; `effective_for_profile` marks direct grants from the profile home. Hierarchy is organizational and does not grant access. To search a parent with its authorized children, pass the entry’s `subtree_space_ids` to `search.space_ids`. Hidden parents and children are omitted.
+The catalog includes spaces[{id,name,description,color,sort_order,parent_id,child_space_ids,subtree_space_ids,path,can_read,can_write}], default_space_id, total_count, offset, limit and next_offset. Page size defaults to 50 and is capped at 200. Only authorized live spaces appear; duplicate names have separate IDs. Use the chosen ID for subsequent operations. `connections` lists visible directed access connections; `effective_for_profile` marks direct grants from the profile home. `color` is a named base color or an opaque sRGB `#RRGGBB` value. `sort_order` is the optional persisted sibling position; older spaces without an explicit position use the name/ID fallback. Hierarchy is organizational and does not grant access. To search a parent with its authorized children, pass the entry’s `subtree_space_ids` to `search.space_ids`. Hidden parents and children are omitted.
 
 ## Search
 

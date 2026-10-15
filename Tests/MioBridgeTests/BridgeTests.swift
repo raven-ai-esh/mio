@@ -177,6 +177,7 @@ final class BridgeTests: XCTestCase {
         try MCPRunner.run(client: client, input: input, output: output)
         let replies = try String(contentsOf: outputURL, encoding: .utf8).split(separator: "\n").map { try JSONValue.decode(Data($0.utf8)) }
         XCTAssertEqual(replies.count, 6) // no response to notification and no stdout diagnostics
+        XCTAssertEqual(replies[0]["result"]["serverInfo"]["version"],.string("0.5.1"))
         XCTAssertEqual(replies[1]["result"]["tools"].arrayValue.map { $0["name"].stringValue! }, MCPRunner.toolNames)
         let readSchema = replies[1]["result"]["tools"].arrayValue.first { $0["name"].stringValue == "read" }!["inputSchema"]
         XCTAssertTrue(readSchema["properties"]["kind"]["enum"].arrayValue.contains(.string("source")))

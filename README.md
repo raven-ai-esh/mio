@@ -77,7 +77,21 @@ The developer build is locally signed **ad hoc**, not notarized. Developer ID di
 
 Select several notes with **⌘-click** or **Shift-click**. Move them to another space, change their status, or remove them together. Drag a note or selection onto a space in the sidebar to move it. Note IDs, links, files and version history stay attached; removed notes can be restored.
 
-Right-click a space to edit its name, description and color, create a child space, or change its parent. Choosing a parent highlights its descendants in Notes and the graph. Agent access connections are shown separately and remain explicit; nesting never grants additional access. Agents can discover the same authorized hierarchy through `read(kind="spaces")`.
+Right-click a space to edit its name, description and color, create a child space, or change its parent. Choose a base color, open the native macOS color palette, or enter an exact **#RRGGBB** value. The same color appears in the sidebar, filters and graph.
+
+**Drag spaces to organize them:** drop between rows to reorder siblings, or onto the middle of a row to nest a space. Drop onto **All memory** to return a space to the top level. Native insertion lines and row highlights show the destination before you release. Order and hierarchy persist across launches and are included in memory sync/export.
+
+Choosing a parent highlights its descendants in Notes and the graph. Agent access connections are shown separately and remain explicit; nesting never grants additional access. Agents can discover the same authorized hierarchy through `read(kind="spaces")`.
+
+<p align="center">
+  <img src="docs/media/spaces.jpg" alt="Create a space with a parent, base colors and an exact custom color" width="560" />
+</p>
+
+### Smoother background work
+
+Mio 0.5.1 replaces repeated Swift record decoding with indexed SQLite reference checks and keeps iCloud connection/error-status work off the main thread. Unchanged background status no longer triggers redundant workspace updates.
+
+On the same isolated release-build fixture — 64 notes with 70.8 KB bodies and 512 links — median queue-check time fell from **87.7 ms to 5.9 ms**. A concurrent owner read waited **9.4 ms instead of 85.8 ms**. These measurements cover this storage bottleneck, not an overall app-speed or iCloud-delivery guarantee.
 
 ### Your first workspace
 

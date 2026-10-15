@@ -292,7 +292,7 @@ import UniformTypeIdentifiers
         guard let indexer else { return }
         if let status = try? await Task.detached(operation: { try indexer.status() }).value {
             let previous=indexingStatus
-            indexingStatus=status
+            if indexingStatus != status { indexingStatus=status }
             let changed=previous["model_state"] != status["model_state"] || ["generation","ready","lexical","fragments","error"].contains { previous["index"][$0] != status["index"][$0] }
             if changed && !query.isEmpty { search() }
         }
@@ -383,10 +383,15 @@ import UniformTypeIdentifiers
     }
     func reconnectCloud() async {
         cloudGeneration += 1
+        let generation=cloudGeneration
         cloud = nil
         guard let store, !preferences.cloudFolder.isEmpty else { return }
-        do { cloud = try CloudSyncCoordinator(store: store, directory: URL(fileURLWithPath: preferences.cloudFolder)); cloudStatus = cloud?.status() ?? .null }
-        catch { cloudStatus = .object(["state": .string("error"), "error": .string(error.localizedDescription)]) }
+        let folder=URL(fileURLWithPath:preferences.cloudFolder)
+        do {
+            let (coordinator,status)=try await Task.detached { let value=try CloudSyncCoordinator(store:store,directory:folder);return (value,value.status()) }.value
+            guard generation==cloudGeneration else { return }
+            cloud=coordinator;cloudStatus=status
+        } catch { if generation==cloudGeneration { cloudStatus = .object(["state": .string("error"), "error": .string(error.localizedDescription)]) } }
     }
     func disconnectCloud() {
         cloudGeneration += 1; cloud = nil
@@ -401,10 +406,11 @@ import UniformTypeIdentifiers
         do {
             let status = try await Task.detached { try cloud.sync() }.value
             guard generation == cloudGeneration else { return }
-            cloudStatus = status; await refresh()
+            if cloudStatus != status { cloudStatus = status }; await refresh()
         } catch {
+            let status=await Task.detached { cloud.status() }.value
             guard generation == cloudGeneration else { return }
-            cloudStatus = cloud.status()
+            if cloudStatus != status { cloudStatus = status }
         }
     }
 }
