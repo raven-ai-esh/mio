@@ -63,6 +63,11 @@ struct NoteEditor: View {
         .onChange(of: title) { _, _ in stage() }
         .onChange(of: text) { _, _ in stage() }
         .onChange(of: status) { _, _ in stage() }
+        .onChange(of: model.preferences.drafts[note.id]?.revision) { old,new in
+            if let draft=model.preferences.drafts[note.id],old == revision,new == note["revision_id"].text,draft.title == title,draft.body == text {
+                revision=draft.revision;status=draft.status;baselineStatus=note["status"].text
+            }
+        }
         .onChange(of: note["revision_id"].text) { _, _ in if !dirty { load() } }
         .confirmationDialog(model.l("Удалить заметку из актуальной памяти? История версий сохранится."), isPresented: $showDelete) { Button(model.l("Удалить заметку"), role: .destructive) { Task { await model.deleteNote(note.id) } }; Button(model.l("Отмена"), role: .cancel) {} }
     }

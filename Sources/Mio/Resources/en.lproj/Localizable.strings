@@ -364,3 +364,31 @@
 "изображение" = "image";
 "распознанный текст" = "extracted text";
 "текст" = "text";
+
+"Пространство сохранено" = "Space saved";
+"Обработано заметок: %@" = "Notes updated: %@";
+"Не удалось перенести заметки. Повторите перетаскивание из этого окна." = "Couldn't move the notes. Drag them again from this window.";
+"Переместить в…" = "Move to…";
+"Изменить статус" = "Change status";
+"Удалить выбранные заметки…" = "Delete selected notes…";
+"Выбрано: %@" = "Selected: %@";
+"Действия с выбранными заметками" = "Actions for selected notes";
+"Выбрано заметок: %@" = "%@ notes selected";
+"Переместите выбранные заметки, измените их статус или перетащите на пространство слева." = "Move the selected notes, change their status, or drag them onto a space in the sidebar.";
+"Удалить %@ заметок?" = "Delete %@ notes?";
+"Заметки и их локальные черновики можно восстановить в разделе «Удалённые заметки»." = "You can restore the notes and their local drafts in Removed notes.";
+"Подключений: %@" = "Connections: %@";
+"Изменить пространство…" = "Edit space…";
+"Создать дочернее пространство…" = "Create child space…";
+"Поместить в пространство" = "Move under space";
+"Без родительского пространства" = "No parent space";
+"Изменить пространство" = "Edit space";
+"Родительское пространство" = "Parent space";
+"Вложенность упорядочивает память и фильтры. Доступ агента задаётся подключениями отдельно." = "Nesting organizes memory and filters. Agent access is controlled separately by connections.";
+"Цвет" = "Color";
+"Подключения агента" = "Agent connections";
+"Добавить…" = "Add…";
+"Прямых подключений нет" = "No direct connections";
+"Убрать подключение" = "Remove connection";
+
+"Описание" = "Description";

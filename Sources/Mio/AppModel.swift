@@ -13,6 +13,11 @@ import UniformTypeIdentifiers
     @Published var tab = "notes"
     @Published var selectedSpace: String = ""
     @Published var selectedNote: String = ""
+    @Published var selectedNotes = Set<String>()
+    @Published var notesPendingDeletion = Set<String>()
+    @Published var editingSpace: JSONValue = .null
+    @Published var connectionSourceSpaceID = ""
+    let dragSessionID = UUID().uuidString
     @Published private(set) var notesFocusedSpaceIDs = Set<String>()
     private var notesSidebarSpaceID: String?
     @Published private(set) var noteDetail: JSONValue = .null
@@ -116,25 +121,30 @@ import UniformTypeIdentifiers
     var selectedNoteValue: JSONValue { noteDetail.id == selectedNote ? noteDetail : .null }
     var visibleSpaceIDs: Set<String> {
         if selectedSpace.isEmpty { return Set(spaces.map(\.id)) }
-        return Set([selectedSpace] + connections.filter { $0["from_space_id"].text == selectedSpace }.map { $0["to_space_id"].text })
+        return expandedSpaces([selectedSpace]).union(connections.filter { $0["from_space_id"].text == selectedSpace }.map { $0["to_space_id"].text })
     }
     var visibleNotes: [JSONValue] {
-        allNotes.filter { visibleSpaceIDs.contains($0["space_id"].text) }.sorted { $0["updated_at"].text > $1["updated_at"].text }
+        let visible=visibleSpaceIDs
+        return allNotes.filter { visible.contains($0["space_id"].text) }.sorted { $0["updated_at"].text > $1["updated_at"].text }
     }
     var notesFilterActive: Bool { !notesFocusedSpaceIDs.isEmpty }
-    func notesOpacity(_ note: JSONValue) -> Double { notesFocusedSpaceIDs.isEmpty || notesFocusedSpaceIDs.contains(note["space_id"].text) ? 1 : 0.06 }
+    func notesOpacity(_ note: JSONValue) -> Double { notesFocusedSpaceIDs.isEmpty || expandedSpaces(notesFocusedSpaceIDs).contains(note["space_id"].text) ? 1 : 0.06 }
     var notesInLiveSpaces: [JSONValue] {
         let available = Set(spaces.map(\.id))
         return allNotes.filter { available.contains($0["space_id"].text) }
     }
     var notesForDisplay: [JSONValue] {
-        notesInLiveSpaces.sorted {
-            let a = notesOpacity($0) == 1, b = notesOpacity($1) == 1
+        let focus=expandedSpaces(notesFocusedSpaceIDs),unfiltered=notesFocusedSpaceIDs.isEmpty
+        return notesInLiveSpaces.sorted {
+            let a = unfiltered || focus.contains($0["space_id"].text), b = unfiltered || focus.contains($1["space_id"].text)
             if a != b { return a }
             return $0["updated_at"] == $1["updated_at"] ? $0.id < $1.id : $0["updated_at"].text > $1["updated_at"].text
         }
     }
-    var emphasizedNoteCount: Int { notesInLiveSpaces.filter { notesOpacity($0) == 1 }.count }
+    var emphasizedNoteCount: Int {
+        let focus=expandedSpaces(notesFocusedSpaceIDs)
+        return notesFocusedSpaceIDs.isEmpty ? notesInLiveSpaces.count:notesInLiveSpaces.filter{focus.contains($0["space_id"].text)}.count
+    }
     func setNotesSpaceSelected(_ id: String, selected: Bool) {
         if selected { notesFocusedSpaceIDs.insert(id) } else { notesFocusedSpaceIDs.remove(id) }
     }
@@ -170,10 +180,12 @@ import UniformTypeIdentifiers
             guard next != snapshot else { return }
             let searchableChanged=next["notes"] != snapshot["notes"] || next["events"] != snapshot["events"] || next["spaces"] != snapshot["spaces"] || next["connections"] != snapshot["connections"]
             snapshot = next
+            graph.updateSpaceHierarchy(spaces)
             graph.invalidatePurgedSources(Set(next["notes"].items.filter { $0["purged"].flag || $0["status"].text == "purged" }.map(\.id)))
             if !graph.sessionID.isEmpty && !sessions.contains(where: { $0.id == graph.sessionID }) { graph.clearSession(); graph.dismissInspector() }
             if searchableChanged && !query.isEmpty { search() }
-            let validNotes = Set(allNotes.map(\.id))
+            let validNotes = Set((allNotes+deletedNotes).map(\.id))
+            selectedNotes.formIntersection(Set(notesInLiveSpaces.map(\.id)))
             let previousDraftCount = preferences.drafts.count
             preferences.drafts = preferences.drafts.filter { validNotes.contains($0.key) }
             if preferences.drafts.count != previousDraftCount { preferences.save() }
@@ -181,15 +193,15 @@ import UniformTypeIdentifiers
             if !selectedNote.isEmpty && !allNotes.contains(where: { $0.id == selectedNote }) { selectedNote = "" }
             if !selectedSession.isEmpty && !sessions.contains(where: { $0.id == selectedSession }) { selectedSession = "" }
             if selectedNote.isEmpty { noteLoadGeneration += 1; noteDetail = .null; noteLoading = false; noteLoadFailure = "" }
-            else if let metadata = allNotes.first(where: { $0.id == selectedNote }), noteDetail.id != selectedNote || ["revision_id", "head_revision_ids", "has_conflict", "status", "updated_at"].contains(where: { noteDetail[$0] != metadata[$0] }) { await loadSelectedNote() }
+            else if let metadata = allNotes.first(where: { $0.id == selectedNote }), noteDetail.id != selectedNote || ["revision_id", "head_revision_ids", "has_conflict", "status", "updated_at", "space_id", "location_id"].contains(where: { noteDetail[$0] != metadata[$0] }) { await loadSelectedNote() }
         } catch { failure = error.localizedDescription }
     }
     func selectSpace(_ id: String) {
-        selectedSpace = id; selectedNote = ""; noteLoadGeneration += 1; noteDetail = .null; noteLoading = false; noteLoadFailure = ""; preferences.selectedSpace = id; preferences.selectedNote = ""; preferences.save()
+        selectedNotes=[];selectedSpace = id; selectedNote = ""; noteLoadGeneration += 1; noteDetail = .null; noteLoading = false; noteLoadFailure = ""; preferences.selectedSpace = id; preferences.selectedNote = ""; preferences.save()
         if !query.isEmpty { search() }
     }
     func selectNote(_ id: String) {
-        selectedNote = id; preferences.selectedNote = id; preferences.save(); tab = "notes"
+        selectedNotes=[id];selectedNote = id; preferences.selectedNote = id; preferences.save(); tab = "notes"
         if noteDetail.id != id { noteDetail = .null }
         noteLoading = true; noteLoadFailure = ""
         noteLoadGeneration += 1
@@ -258,7 +270,7 @@ import UniformTypeIdentifiers
         } catch { failure = error.localizedDescription }
     }
     func deleteNote(_ id: String) async {
-        do { _ = try await execute("note.delete", ["note_id": .string(id)]); preferences.drafts.removeValue(forKey: id); preferences.save(); await refresh(); notice = "Заметка удалена из актуальной памяти" }
+        do { _ = try await execute("note.delete", ["note_id": .string(id)]); await refresh(); notice = "Заметка удалена из актуальной памяти" }
         catch { failure = error.localizedDescription }
     }
     func purgeSession(_ id: String) async {

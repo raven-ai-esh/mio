@@ -28,6 +28,9 @@ import MioCore
     @Published private(set) var purgedSourceIDs = Set<String>()
     @Published var nodeQuery = ""
     @Published private(set) var focusedSpaceIDs = Set<String>()
+    private var spaceTree=MioSpaceTree(spaces:[])
+    var effectiveFocusedSpaceIDs: Set<String> { focusedSpaceIDs.reduce(into:Set<String>()) { $0.formUnion(spaceTree.subtreeIDs(of:$1)) } }
+    func updateSpaceHierarchy(_ spaces: [JSONValue]) { spaceTree=MioSpaceTree(spaces:spaces) }
     private var lastSidebarSpaceID: String?
     private var topology = ""
     private var layoutGeneration = 0
@@ -42,7 +45,10 @@ import MioCore
     var selectedStep: GraphReplayStep? { mode == .history && stepIndex > 0 && stepIndex <= steps.count ? steps[stepIndex-1] : nil }
     var highlights: GraphReplayHighlights { mode == .history ? MemoryGraphReplay.highlights(steps:steps,through:stepIndex) : .init() }
     var spaceFilterActive: Bool { !focusedSpaceIDs.isEmpty }
-    var focusedNodeCount: Int { spaceFilterActive ? displayNodes.filter { focusedSpaceIDs.contains($0.spaceID) }.count : displayNodes.count }
+    var focusedNodeCount: Int {
+        let nodes=displayNodes,focus=effectiveFocusedSpaceIDs
+        return spaceFilterActive ? nodes.filter { focus.contains($0.spaceID) }.count:nodes.count
+    }
     func toggleSpaceFocus(_ id: String) {
         if focusedSpaceIDs.contains(id) { focusedSpaceIDs.remove(id) } else { focusedSpaceIDs.insert(id) }
     }

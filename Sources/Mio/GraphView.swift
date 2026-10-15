@@ -22,7 +22,7 @@ struct GraphWorkspace: View {
             if graph.mode == .history { sessionBar; Divider() }
             HStack(spacing:0) {
                 ZStack {
-                    GraphCanvas(localizer:model.localizer,nodes:graph.displayNodes,edges:graph.edges,positions:graph.displayPositions,colors:colors,selected:graph.selectedNodeID,history:graph.mode == .history,highlights:graph.highlights,focusedSpaceIDs:graph.focusedSpaceIDs,fitToken:graph.fitToken,zoomCommand:graph.zoomCommand) { id in Task { await graph.inspect(id,using:model) } }
+                    GraphCanvas(localizer:model.localizer,nodes:graph.displayNodes,edges:graph.edges,positions:graph.displayPositions,colors:colors,selected:graph.selectedNodeID,history:graph.mode == .history,highlights:graph.highlights,focusedSpaceIDs:graph.effectiveFocusedSpaceIDs,fitToken:graph.fitToken,zoomCommand:graph.zoomCommand) { id in Task { await graph.inspect(id,using:model) } }
                     if graph.nodes.isEmpty && !graph.calculating {
                         EmptyMemoryView(symbol:"point.3.connected.trianglepath.dotted",title:model.l("Граф появится вместе с памятью"),detail:model.l("Добавьте заметки или подключите другое пространство."))
                     }

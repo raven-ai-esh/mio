@@ -4,19 +4,17 @@ import CSQLite
 extension MioStore {
     func dispatch(_ method: String, _ p: [String: JSONValue], _ s: Scope) throws -> JSONValue {
         switch method {
-        case "diagnostics": return .object(["schema_version": .number(1), "sqlite_version": .string(String(cString: sqlite3_libversion())), "fts5": .bool(sqlite3_compileoption_used("ENABLE_FTS5") != 0), "integrity": .string(try db.rows("PRAGMA integrity_check").first?.values.first ?? "unknown")])
+        case "diagnostics": return .object(["schema_version": .number(Double(Self.schema)), "sqlite_version": .string(String(cString: sqlite3_libversion())), "fts5": .bool(sqlite3_compileoption_used("ENABLE_FTS5") != 0), "integrity": .string(try db.rows("PRAGMA integrity_check").first?.values.first ?? "unknown")])
         case "interaction.session.begin", "interaction.session.end", "interaction.call.begin", "interaction.call.reject", "interaction.call.delivery": return try interactionControl(method,p,s)
         case "snapshot": return try snapshot(s,projection:p.string("projection","full"))
-        case "space.create":
-            let id = UUID().uuidString.lowercased()
-            let d: JSONValue = .object(["id": .string(id), "name": .string(try p.required("name")), "color": .string(p.string("color","blue")), "deleted": .bool(false), "created_at": .string(now())])
-            _ = try record("space",entityID:id,data:d); return d
-        case "space.rename", "space.delete":
+        case "space.create": return try saveSpace(p,s,creating:true)
+        case "space.rename", "space.update": return try saveSpace(p,s,creating:false)
+        case "space.delete":
             let id = try p.required("space_id"); try requireSpace(id,s,write:true)
             var d = try entity("space",id)!.objectValue
-            if method == "space.rename" { d["name"] = .string(try p.required("name")) }
-            else { d["deleted"] = .bool(true) }
+            d["deleted"] = .bool(true)
             _ = try record("space",entityID:id,data:.object(d)); return .object(d)
+        case "notes.bulk": return try bulkNotes(p,s)
         case "note.create": return try createNote(p,s)
         case "note.update", "note.restore", "note.resolve": return try changeNote(method,p,s)
         case "note.delete":
@@ -24,15 +22,14 @@ extension MioStore {
             _ = try record("note.delete",entityID:id,data:.object(["space_id": n["space_id"], "revision_id": n["revision_id"]])); return .object(["id": .string(id),"note_id": .string(id), "deleted": .bool(true)])
         case "note.history":
             let id = try p.required("note_id"); _ = try requireEntity("note",id,s,allowDeleted:true)
-            let note = try requireEntity("note",id,s,allowDeleted:true)
-            let history = try revisions(id).map { revision -> JSONValue in try requireSpace(revision["space_id"].stringValue ?? "",s); guard revision["space_id"] == note["space_id"] else { throw MioError("invalid_revision","Revision belongs to a different space") }; return sanitizeSources(revision,s) }
+            let history = try revisions(id).map { sanitizeSources(try currentOwnership($0,kind:"revision"),s) }
             return .object(["note_id":.string(id),"revisions":.array(history)])
         case "link.create":
             let from = try p.required("from_note_id"), to = try p.required("to_note_id")
             let n = try requireEntity("note",from,s,write:true); _ = try requireEntity("note",to,s)
             let kind = p.string("kind","related")
             if let old = try all("link").first(where: { !$0["deleted"].boolValue && $0["from_note_id"].stringValue == from && $0["to_note_id"].stringValue == to && $0["kind"].stringValue == kind }) {
-                if old["derived"].stringValue == "wikilink" { var d = old.objectValue; d["derived"] = .null; _ = try record("link",entityID:old["id"].stringValue!,data:.object(d)); return .object(d) }; return old
+                if old["derived"].stringValue == "wikilink" { var d = old.objectValue; d["derived"] = .null; _ = try record("link",entityID:old["id"].stringValue!,data:.object(d)); return try currentOwnership(.object(d),kind:"link") }; return try currentOwnership(old,kind:"link")
             }
             let id = UUID().uuidString.lowercased()
             let d: JSONValue = .object(["id": .string(id), "space_id": n["space_id"],"from_note_id": .string(from), "to_note_id": .string(to), "kind": .string(kind),"deleted": .bool(false)])
@@ -116,32 +113,34 @@ extension MioStore {
     func changeNote(_ method: String, _ p: [String: JSONValue], _ s: Scope) throws -> JSONValue {
         let id = try p.required("note_id"), old = try requireEntity("note",id,s,write:true,allowDeleted:method == "note.restore")
         if method == "note.update", !(try records("note.redact",id)).isEmpty { throw MioError("source_purged","This note was cleared with its source. Create a new note to save fresh evidence.") }
+        let originSpace=try entity("revision",old["revision_id"].stringValue ?? "")?["space_id"]
         var values = old.objectValue
         let heads = old["head_revision_ids"].arrayValue
         var conflict = false
+        var retainedSources=[JSONValue]()
         if method == "note.update" {
             let expected = try p.required("expected_revision")
-            guard let base = try entity("revision",expected), base["note_id"].stringValue == id, base["space_id"] == old["space_id"] else { throw MioError("invalid_revision", "Expected revision does not belong to this note") }
-            try requireSpace(base["space_id"].stringValue ?? "",s,write:true)
+            guard let base = try entity("revision",expected), base["note_id"].stringValue == id, base["space_id"] == originSpace else { throw MioError("invalid_revision", "Expected revision does not belong to this note") }
             conflict = expected != old["revision_id"].stringValue || old["has_conflict"].boolValue
-            values = base.objectValue
+            values = base.objectValue;retainedSources=base["source_ids"].arrayValue
+            values.removeValue(forKey:"restored_from");values.removeValue(forKey:"resolved_from")
             for key in ["title","body","status","source_ids"] { if let v = p[key] { values[key] = v } }
             values["parent_ids"] = .array([.string(expected)])
         } else {
             let chosen = try p.required("revision_id")
-            guard let rev = try entity("revision",chosen), rev["note_id"].stringValue == id, rev["space_id"] == old["space_id"] else { throw MioError("invalid_revision", "Selected revision does not belong to this note") }
-            try requireSpace(rev["space_id"].stringValue ?? "",s,write:true)
-            values = rev.objectValue; values["parent_ids"] = .array(heads)
+            guard let rev = try entity("revision",chosen), rev["note_id"].stringValue == id, rev["space_id"] == originSpace else { throw MioError("invalid_revision", "Selected revision does not belong to this note") }
+            values = rev.objectValue; retainedSources=rev["source_ids"].arrayValue; values["parent_ids"] = .array(heads)
+            values.removeValue(forKey:"restored_from");values.removeValue(forKey:"resolved_from")
             if method == "note.restore" { values["cleared_deletions"] = .array(try records("note.delete",id).map { $0["id"] }); values["restored_from"] = .string(chosen) }
             else { values["resolved_from"] = .string(chosen) }
         }
         guard let title = values["title"]?.stringValue, !title.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty, values["body"]?.stringValue != nil else { throw MioError("invalid_params", "A note requires a title and text body") }
-        try validateSources(values["source_ids"] ?? .array([]),s)
+        try validateSources(.array((values["source_ids"] ?? .array([])).arrayValue.filter { !retainedSources.contains($0) }),s)
         let rid = UUID().uuidString.lowercased()
         values["id"] = .string(rid); values["note_id"] = .string(id); values["author"] = .string(s.actor); values["timestamp"] = .string(now())
         for key in ["revision_id","head_revision_ids","has_conflict","updated_at","deleted"] { values.removeValue(forKey:key) }
         _ = try record("revision",entityID:rid,data:.object(values))
-        var result: [String: JSONValue] = ["id": .string(id),"note_id": .string(id),"revision_id": .string(rid),"current_revision": old["revision_id"],"note": try entity("note",id)!]
+        var result: [String: JSONValue] = ["id": .string(id),"note_id": .string(id),"revision_id": .string(rid),"current_revision": old["revision_id"],"note": sanitizeSources(try entity("note",id)!,s)]
         if !conflict { result["link_warnings"] = .array(try refreshWikilinks(try entity("note",id)!,s)) }
         if conflict { result["_error"] = .string("revision_conflict") }
         return .object(result)
@@ -172,7 +171,10 @@ extension MioStore {
         guard ["full","compact"].contains(projection) else { throw MioError("invalid_params","Snapshot projection must be full or compact") }
         let compact = projection == "compact"
         func visible(_ v: JSONValue) -> Bool { !v["deleted"].boolValue && s.readable.contains(v["space_id"].stringValue ?? "") }
-        let spaces = try all("space").filter { s.human || s.readable.contains($0["id"].stringValue ?? "") }
+        let spaces = try all("space").filter { s.human || s.readable.contains($0["id"].stringValue ?? "") }.map { space -> JSONValue in
+            guard !s.human,let parent=space["parent_id"].stringValue,!s.readable.contains(parent) else { return space }
+            var fields=space.objectValue;fields["parent_id"] = .null;return .object(fields)
+        }
         let notes = compact ? try compactSnapshotNotes(s) : try all("note").filter { s.human || visible($0) }.map { sanitizeSources($0,s) }
         let sessions = try all("session").filter { s.human || visible($0) }.compactMap { try visibleSession($0,s) }
         let eventWhere: String, eventBindings: [String]
@@ -187,15 +189,17 @@ extension MioStore {
         // The owner already has all note metadata. Avoid decoding two full
         // note bodies per edge on every UI refresh; agent checks stay scoped.
         let ownerEndpoints = s.human ? Set(notes.filter { !$0["deleted"].boolValue && s.readable.contains($0["space_id"].stringValue ?? "") }.compactMap { $0["id"].stringValue }) : nil
+        let noteSpaces=Dictionary(uniqueKeysWithValues:notes.map { ($0["id"].stringValue ?? "",$0["space_id"]) })
         let links = try all("link").filter { link in
             guard !link["deleted"].boolValue else { return s.human }
             if let ownerEndpoints { return ownerEndpoints.contains(link["from_note_id"].stringValue ?? "") && ownerEndpoints.contains(link["to_note_id"].stringValue ?? "") }
             return (try? requireEntity("note",link["from_note_id"].stringValue ?? "",s)) != nil && (try? requireEntity("note",link["to_note_id"].stringValue ?? "",s)) != nil
         }
+        let projectedLinks=links.map { link -> JSONValue in var value=link.objectValue; if let space=noteSpaces[link["from_note_id"].stringValue ?? ""] { value["space_id"]=space }; return .object(value) }
         let profiles = s.human ? try all("profile").map { v -> JSONValue in var d = v.objectValue; d.removeValue(forKey:"token_hash"); return .object(d) } : []
         let audit = s.human ? try db.rows("SELECT json FROM audit ORDER BY rowid DESC LIMIT 200").map { try decode($0["json"]!) } : []
         let connections = try all("connection").filter { s.human || (!$0["deleted"].boolValue && s.readable.contains($0["from_space_id"].stringValue ?? "") && s.readable.contains($0["to_space_id"].stringValue ?? "")) }
-        return .object(["projection":.string(projection),"bodies_omitted":.bool(compact),"spaces": .array(spaces),"notes": .array(notes),"links": .array(links),"connections": .array(connections),"profiles": .array(profiles),"sessions": .array(sessions),"events": .array(events),"interactions":.array(try visibleInteractions(s)),"audit": .array(audit),"counts": .object(["spaces": .number(Double(spaces.filter { !$0["deleted"].boolValue }.count)),"notes": .number(Double(notes.filter { !$0["deleted"].boolValue }.count)),"sessions": .number(Double(sessions.filter { !$0["deleted"].boolValue }.count)),"events": .number(Double(eventCount))]),"pending_sync": .number(s.human ? Double(try db.rows("SELECT count(*) AS n FROM outbox").first?["n"] ?? "0") ?? 0 : 0)])
+        return .object(["projection":.string(projection),"bodies_omitted":.bool(compact),"spaces": .array(spaces),"notes": .array(notes),"links": .array(projectedLinks),"connections": .array(connections),"profiles": .array(profiles),"sessions": .array(sessions),"events": .array(events),"interactions":.array(try visibleInteractions(s)),"audit": .array(audit),"counts": .object(["spaces": .number(Double(spaces.filter { !$0["deleted"].boolValue }.count)),"notes": .number(Double(notes.filter { !$0["deleted"].boolValue }.count)),"sessions": .number(Double(sessions.filter { !$0["deleted"].boolValue }.count)),"events": .number(Double(eventCount))]),"pending_sync": .number(s.human ? Double(try db.rows("SELECT count(*) AS n FROM outbox").first?["n"] ?? "0") ?? 0 : 0)])
     }
     func importHistory(_ p: [String: JSONValue], _ s: Scope, restore: Bool) throws -> JSONValue {
         let space = try p.required("space_id"); try requireSpace(space,s,write:true)

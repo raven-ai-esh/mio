@@ -34,7 +34,13 @@ extension MioStore {
                 }
                 body = String(body[end.upperBound...])
             }
-            let old = try all("note").first { $0["space_id"].stringValue == space && $0["import_path"].stringValue == key }
+            let candidates=try all("note").filter { $0["import_path"].stringValue == key }
+            var old=candidates.first { $0["space_id"].stringValue == space }
+            if old == nil {
+                for candidate in candidates where candidate["location_id"].stringValue != nil {
+                    if try entity("revision",candidate["revision_id"].stringValue ?? "")?["space_id"].stringValue == space { old=candidate;break }
+                }
+            }
             let result: JSONValue
             if let old, !old["deleted"].boolValue {
                 let retainedSources = sources ?? old["source_ids"]
@@ -62,6 +68,14 @@ extension MioStore {
             if let existing = try entity("attachment",id), existing["sha256"] == data["sha256"] { continue }
             _ = try record("attachment",entityID:id,data:data); attached += 1
         }
+        for (_,note) in imported where note["space_id"].stringValue != space {
+            var origin=note.objectValue;origin["space_id"] = .string(space)
+            let copied=try copyReferencedAssets(.object(origin),to:note["space_id"].stringValue!)
+            let bindings=Set((copied+note["asset_ids"].arrayValue).compactMap(\.stringValue)).sorted()
+            if bindings != note["asset_ids"].arrayValue.compactMap(\.stringValue).sorted() {
+                _=try record("note.assets",entityID:note["id"].stringValue!,data:.object(["note_id":note["id"],"space_id":note["space_id"],"revision_id":note["revision_id"],"asset_ids":.array(bindings.map(JSONValue.string))]))
+            }
+        }
         return .object(["imported_notes":.number(Double(imported.count)),"imported_attachments":.number(Double(attached)),"warnings":.array(warnings),"source_modified":.bool(false)])
     }
     func markdownExport(_ p: [String: JSONValue], _ s: Scope) throws -> JSONValue {
@@ -69,7 +83,15 @@ extension MioStore {
         let requested = Set(p["space_ids"]?.arrayValue.compactMap(\.stringValue) ?? Array(s.readable)), spaces = s.readable.intersection(requested)
         let notes = try all("note").filter { !$0["deleted"].boolValue && spaces.contains($0["space_id"].stringValue ?? "") }
         let links = try all("link").filter { !$0["deleted"].boolValue }
-        let assets = try all("attachment").filter { !$0["deleted"].boolValue && spaces.contains($0["space_id"].stringValue ?? "") }
+        let selectedNoteIDs=Set(notes.compactMap{$0["id"].stringValue})
+        let fileIDs=Set(notes.flatMap{$0["file_ids"].arrayValue.compactMap(\.stringValue)})
+        let boundIDs=Set(notes.flatMap{$0["asset_ids"].arrayValue.compactMap(\.stringValue)})
+        let assets = try all("attachment").map { try currentOwnership($0,kind:"attachment") }.filter {
+            guard !$0["deleted"].boolValue,!$0["purged"].boolValue else { return false }
+            if $0["kind"] == .string("pinned_asset") { return selectedNoteIDs.contains($0["note_id"].stringValue ?? "") && boundIDs.contains($0["id"].stringValue ?? "") }
+            if $0["kind"] == .string("memory_file") { return fileIDs.contains($0["id"].stringValue ?? "") }
+            return spaces.contains($0["space_id"].stringValue ?? "") || boundIDs.contains($0["id"].stringValue ?? "")
+        }
         let assetNames = exportAssetNames(assets)
         var exportWarnings: [JSONValue] = []
         var names: [String:String] = [:]

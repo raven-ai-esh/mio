@@ -39,6 +39,7 @@ extension MioStore {
             let kind = row["kind"]!, id = row["id"]!
             if kind == "note" && asOf != nil { continue }
             guard let entity = try entity(kind,id) else { continue }
+            if kind == "note" { guard let current=try? requireEntity("note",id,s),current["space_id"].stringValue == row["space_id"],current["revision_id"].stringValue == row["revision_id"] else { continue } }
             if kind == "event" && (!isVisible(entity,s) || (activeInteractionID != nil && entity["interaction_id"].stringValue == activeInteractionID)) { continue }
             let evidenceWeight: Double = kind == "event" && entity["role"].stringValue == "assistant" ? 0.000001 : 0
             var d: [String: JSONValue] = ["kind": .string(kind),"id": .string(id),"title": .string(row["title"] ?? ""),"snippet": .string(excerpt(row["text"] ?? "",words:Array(words),max:1200)),"space_id": .string(row["space_id"]!),"timestamp": .string(row["timestamp"] ?? ""),"status": .string(row["status"] ?? "unknown")]
@@ -87,8 +88,7 @@ extension MioStore {
         let item = try requireEntity(kind,id,s)
         if kind == "note" {
             if let rid = p["revision_id"]?.stringValue, !rid.isEmpty {
-                guard let rev = try entity("revision",rid), rev["note_id"].stringValue == id, rev["space_id"] == item["space_id"] else { throw MioError("invalid_revision", "Revision does not belong to this note") }
-                try requireSpace(rev["space_id"].stringValue ?? "",s)
+                guard let rev = try? requireEntity("revision",rid,s), rev["note_id"].stringValue == id, rev["space_id"] == item["space_id"] else { throw MioError("invalid_revision", "Revision does not belong to this note") }
                 var d = sanitizeSources(rev,s).objectValue; d["id"] = .string(id); d["revision_id"] = .string(rid); d["deleted"] = item["deleted"]; d["has_conflict"] = item["has_conflict"]
                 return try noteWithLinks(.object(d),owner:item,revisionID:rid,params:p,scope:s)
             }

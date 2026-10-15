@@ -19,8 +19,34 @@ extension MioStore {
     public func configureSourceImages(_ renderer: @escaping (JSONValue,Data,JSONValue) throws -> Data) {
         lock.lock(); defer { lock.unlock() }; sourceImageRenderer = renderer
     }
-    private func indexSignature(_ note: JSONValue, modelID: String) throws -> String {
-        hash(try JSONValue.object(["note_id":note["id"],"revision_id":note["revision_id"],"file_ids":note["file_ids"],"extractor":.string(MioDocumentExtraction.version),"model":.string(modelID)]).encoded())
+    private func indexSignature(_ note: JSONValue, modelID: String, location: Bool = true) throws -> String {
+        var fields: [String:JSONValue] = ["note_id":note["id"],"revision_id":note["revision_id"],"file_ids":note["file_ids"],"extractor":.string(MioDocumentExtraction.version),"model":.string(modelID)]
+        if location { fields["space_id"]=note["space_id"] }
+        return hash(try JSONValue.object(fields).encoded())
+    }
+    func relocateSourceIndex(_ note: JSONValue, previous: JSONValue) throws {
+        let id=note["id"].stringValue!,space=note["space_id"].stringValue!
+        for row in try db.rows("SELECT id,json,current FROM source_fragments WHERE note_id=?",[id]) {
+            var fragment=try decode(row["json"]!).objectValue;fragment["space_id"] = .string(space)
+            try db.exec("UPDATE source_fragments SET space_id=?,json=? WHERE id=?",[space,try encode(.object(fragment)),row["id"]!])
+            if row["current"] == "1" { try indexDocument(kind:"fragment",id:row["id"]!,space:space,revision:fragment["revision_id"]!.stringValue!,title:fragment["title"]?.stringValue ?? "",text:fragment["text"]?.stringValue ?? "",timestamp:fragment["timestamp"]?.stringValue ?? "",status:fragment["status"]?.stringValue ?? "") }
+        }
+        if let job=try db.rows("SELECT model_id,state,signature FROM source_index_jobs WHERE note_id=?",[id]).first {
+            let matching=job["signature"] == (try indexSignature(previous,modelID:job["model_id"]!))
+            if job["state"] == "indexing" || !matching { try db.exec("DELETE FROM source_index_jobs WHERE note_id=?",[id]) }
+            else { try db.exec("UPDATE source_index_jobs SET signature=? WHERE note_id=?",[try indexSignature(note,modelID:job["model_id"]!),id]) }
+        }
+        try db.exec("INSERT INTO metadata(key,value) VALUES('source_index_generation','1') ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1")
+    }
+    func upgradeSourceIndexLocationSignatures() throws {
+        // Preserve vectors only when the old job still matches this revision.
+        try db.exec("DELETE FROM source_index_jobs WHERE state='indexing'")
+        for row in try db.rows("SELECT jobs.note_id,jobs.model_id,jobs.signature,json_object('id',notes.id,'space_id',json_extract(notes.json,'$.space_id'),'revision_id',json_extract(notes.json,'$.revision_id'),'file_ids',json_extract(notes.json,'$.file_ids')) AS note FROM source_index_jobs jobs JOIN entities notes ON notes.kind='note' AND notes.id=jobs.note_id") {
+            let note=try decode(row["note"]!)
+            if row["signature"] == (try indexSignature(note,modelID:row["model_id"]!,location:false)) {
+                try db.exec("UPDATE source_index_jobs SET signature=? WHERE note_id=?",[try indexSignature(note,modelID:row["model_id"]!),row["note_id"]!])
+            } else { try db.exec("DELETE FROM source_index_jobs WHERE note_id=?",[row["note_id"]!]) }
+        }
     }
     public func nextSourceIndexJob(modelID: String) throws -> JSONValue? {
         lock.lock();defer{lock.unlock()}

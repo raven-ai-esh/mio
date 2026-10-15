@@ -7,7 +7,7 @@ public final class MioStore: @unchecked Sendable {
     let lock = NSRecursiveLock()
     public let directory: URL
     let deviceID: String
-    static let schema = 1
+    static let schema = 2
     let runtimeID = UUID().uuidString.lowercased()
     var activeInteractionID: String?
     var interactionReplies: [String: Result<JSONValue,MioError>] = [:]
@@ -21,8 +21,8 @@ public final class MioStore: @unchecked Sendable {
         self.db = try SQLite(path: directory.appendingPathComponent("mio.sqlite").path)
         try db.exec("CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
         let previous = try db.rows("SELECT value FROM metadata WHERE key='schema'").first?["value"]
-        if let previous, previous != "1" { throw MioError("schema_incompatible", "This database requires a different Mio version") }
-        try db.exec("INSERT OR IGNORE INTO metadata VALUES('schema','1')")
+        if let previous, !["1","2"].contains(previous) { throw MioError("schema_incompatible", "This database requires a different Mio version") }
+        try db.exec("INSERT OR REPLACE INTO metadata VALUES('schema','2')")
         let existing = try db.rows("SELECT value FROM metadata WHERE key='device_id'").first?["value"]
         deviceID = existing ?? UUID().uuidString.lowercased()
         try db.exec("INSERT OR IGNORE INTO metadata VALUES('device_id',?)", [deviceID])
@@ -43,6 +43,7 @@ public final class MioStore: @unchecked Sendable {
         try db.exec("INSERT INTO search_index(search_index,rank) VALUES('secure-delete',1)")
         try ensureSearchMapping()
         try ensureSourceIndex()
+        if previous == "1" { try upgradeSourceIndexLocationSignatures() }
         try ensureInteractionProjection()
         try recoverMemoryInteractions()
     }
@@ -172,7 +173,8 @@ public final class MioStore: @unchecked Sendable {
         guard let space = try entity("space", id), !space["deleted"].boolValue else { throw MioError(scope.human ? "not_found" : "forbidden", "Space is unavailable or access is not permitted") }
     }
     func requireEntity(_ kind: String, _ id: String, _ scope: Scope, write: Bool = false, allowDeleted: Bool = false) throws -> JSONValue {
-        guard let item = try entity(kind, id), allowDeleted || !item["deleted"].boolValue else { throw MioError(scope.human ? "not_found" : "forbidden", "Entity is unavailable or access is not permitted") }
+        guard let stored = try entity(kind, id), allowDeleted || !stored["deleted"].boolValue else { throw MioError(scope.human ? "not_found" : "forbidden", "Entity is unavailable or access is not permitted") }
+        let item = try currentOwnership(stored,kind:kind)
         if !scope.human && !(write ? scope.writable : scope.readable).contains(item["space_id"].stringValue ?? "") { throw MioError("forbidden", "Entity is unavailable or access is not permitted") }
         try requireVisibility(item,scope)
         try requireSpace(item["space_id"].stringValue ?? "", scope, write: write)
@@ -240,7 +242,9 @@ public final class MioStore: @unchecked Sendable {
         let kind = r["kind"].stringValue!, id = r["entity_id"].stringValue!
         var d = r["data"].objectValue
         if kind == "revision" { try put("revision", .object(d)); try refreshNote(d["note_id"]!.stringValue!); return }
+        if kind == "note.assets" { try refreshNote(id); return }
         if kind == "note.delete" { try refreshNote(id); return }
+        if kind == "note.move" { try latest("note_location",id,d,r); try refreshNote(id); return }
         if kind == "note.redact" { try redactNote(id); return }
         if kind == "session.purge" { try purgeProjection(id); return }
         if kind == "event" {
@@ -280,10 +284,15 @@ public final class MioStore: @unchecked Sendable {
         guard let selected = heads.last else { throw MioError("invalid_replica", "Revision ancestry contains a cycle") }
         let cleared = Set(revs.flatMap { $0["cleared_deletions"].arrayValue.compactMap(\.stringValue) })
         let deleted = try records("note.delete", noteID).contains { !cleared.contains($0["id"].stringValue!) }
+        let previous = try entity("note",noteID)
         var n = selected.objectValue
+        let location=try entity("note_location",noteID)
+        if let location { n["space_id"]=location["space_id"]; n["location_id"]=location["last_record"] }
+        n["asset_ids"] = .array(try noteAssetBindings(noteID,revision:selected,location:location))
         n["id"] = .string(noteID); n["revision_id"] = selected["id"]; n["updated_at"] = selected["timestamp"]
         n["deleted"] = .bool(deleted); n["has_conflict"] = .bool(heads.count > 1); n["head_revision_ids"] = .array(heads.map { $0["id"] })
         try put("note", .object(n))
+        if let previous,previous["space_id"] != n["space_id"] { try relocateSourceIndex(.object(n),previous:previous) }
         try db.exec("UPDATE source_fragments SET current=0 WHERE note_id=? AND (json_extract(json,'$.indexed_note_revision')<>? OR ?='1')",[noteID,n["revision_id"]!.stringValue!,deleted || n["purged"]?.boolValue == true ? "1":"0"])
         if !deleted && n["status"]?.stringValue != "purged" {
             try indexDocument(kind:"note",id:noteID,space:n["space_id"]!.stringValue!,revision:selected["id"].stringValue!,title:n["title"]!.stringValue!,text:n["body"]!.stringValue!,timestamp:n["updated_at"]!.stringValue!,status:n["status"]!.stringValue!)

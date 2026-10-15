@@ -34,6 +34,7 @@ import MioCore
         XCTAssertEqual(model.selectedNote,noteB.id); XCTAssertEqual(model.selectedSpace,a)
         XCTAssertEqual(model.noteDetail,detail); XCTAssertEqual(model.preferences.drafts[noteB.id]?.body,draft)
         XCTAssertEqual(model.tab,"notes")
+        model.focusNotesSpace("unavailable");XCTAssertEqual(model.emphasizedNoteCount,0);XCTAssertTrue(model.notesForDisplay.allSatisfy{model.notesOpacity($0)==0.06})
     }
     func testEmptyFocusKeepsOtherRowsAndDeletedNotesStayExcluded() async throws {
         let empty = try await model.execute("space.create",["name":.string("Empty")])["id"].text

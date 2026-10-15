@@ -4,12 +4,26 @@ extension MioStore {
     func canApply(_ r: JSONValue) throws -> Bool {
         let kind = r["kind"].stringValue ?? "", data = r["data"]
         if ["revision","session","session.restore","event","attachment"].contains(kind), try entity("space",data["space_id"].stringValue ?? "") == nil { return false }
+        if ["note.move","note.assets"].contains(kind) {
+            guard try entity("note",r["entity_id"].stringValue ?? "") != nil,try entity("space",data["space_id"].stringValue ?? "") != nil else { return false }
+            if kind == "note.assets" { guard let revision=try entity("revision",data["revision_id"].stringValue ?? "") else { return false };guard revision["note_id"]==data["note_id"] else { throw MioError("invalid_replica","Attachment bindings belong to another note") } }
+            for id in data["asset_ids"].arrayValue {
+                guard let asset=try entity("attachment",id.stringValue ?? "") else { return false }
+                guard asset["kind"] == .string("pinned_asset"),asset["note_id"] == data["note_id"] else { throw MioError("invalid_replica","Pinned attachment belongs to a different note") }
+            }
+            if kind == "note.move",let anchor=data["asset_revision_id"].stringValue {
+                guard let revision=try entity("revision",anchor) else { return false }
+                guard revision["note_id"]==data["note_id"] else { throw MioError("invalid_replica","Location attachment revision belongs to another note") }
+            }
+            return true
+        }
         if kind == "revision" {
             for parent in data["parent_ids"].arrayValue {
                 guard let p = try entity("revision",parent.stringValue ?? "") else { return false }
                 guard p["note_id"] == data["note_id"],p["space_id"] == data["space_id"] else { throw MioError("invalid_replica", "Revision parent belongs to a different note") }
             }
         }
+        if kind == "attachment",data["kind"] == .string("pinned_asset"),try entity("note",data["note_id"].stringValue ?? "") == nil { return false }
         if kind == "attachment", data["kind"] == .string("memory_file") {
             guard let parent=try entity("revision",data["captured_revision_id"].stringValue ?? "") else { return false }
             guard data["id"] == r["entity_id"],parent["note_id"] == data["note_id"],parent["space_id"] == data["space_id"],parent["file_ids"].arrayValue.contains(data["id"]) else { throw MioError("invalid_replica","File binding does not match its parent revision") }

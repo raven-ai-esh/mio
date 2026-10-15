@@ -22,10 +22,12 @@ struct SpaceFilterControl: View {
                     Text(model.l("Выберите одно или несколько. Остальные записи остаются видимыми, но почти прозрачными.")).font(.caption).foregroundStyle(.secondary)
                     ScrollView {
                         VStack(alignment:.leading,spacing:12) {
-                            ForEach(model.spaces) { space in
+                            ForEach(model.spaceEntries) { entry in
+                                let space=entry.space
+                                let subtree=model.spaceTree.subtreeIDs(of:entry.id)
                                 Toggle(isOn:Binding(get:{selectedSpaceIDs.contains(space.id)},set:{setSelected(space.id,$0)})) {
-                                    HStack { Circle().fill(MioFormat.color(space["color"].text)).frame(width:8,height:8); Text(space["name"].text); Spacer(); Text("\(model.allNotes.filter{$0["space_id"].text==space.id}.count)").foregroundStyle(.secondary) }
-                                }.toggleStyle(.checkbox).accessibilityIdentifier(accessibilityPrefix+"."+space.id)
+                                    HStack { Circle().fill(MioFormat.color(space["color"].text)).frame(width:8,height:8); Text(space["name"].text); Spacer(); Text("\(model.allNotes.filter{subtree.contains($0["space_id"].text)}.count)").foregroundStyle(.secondary) }
+                                }.padding(.leading,CGFloat(min(entry.depth,8))*12).toggleStyle(.checkbox).accessibilityIdentifier(accessibilityPrefix+"."+space.id)
                             }
                         }.padding(.vertical,5)
                     }.frame(maxHeight:280)

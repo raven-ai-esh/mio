@@ -22,7 +22,7 @@ extension MioStore {
             if !(try records("note.redact",noteID)).isEmpty || d["purged"]?.boolValue == true {
                 d["title"] = .string("Purged source"); d["body"] = .string(""); d["source_ids"] = .array([]); d["status"] = .string("purged"); d["purged"] = .bool(true); r["data"] = .object(d)
             }
-        } else if kind == "attachment", d["kind"] == .string("memory_file") {
+        } else if kind == "attachment", ["memory_file","pinned_asset"].contains(d["kind"]?.stringValue ?? "") {
             if !(try records("note.redact",d["note_id"]?.stringValue ?? "")).isEmpty || d["purged"]?.boolValue == true {
                 d["bytes"] = .string(""); d["sha256"] = .string(hash(Data())); d["file_name"] = .string("Purged file"); d["mime_type"] = .string("application/octet-stream")
                 d["relative_path"] = .string("Files/"+(input["entity_id"].stringValue ?? "")+"/purged"); d["byte_count"] = .number(0); d["purged"] = .bool(true); r["data"] = .object(d)
@@ -92,7 +92,7 @@ extension MioStore {
                 try put("revision",clean["data"])
             }
         }
-        for row in try db.rows("SELECT id,json FROM records WHERE kind='attachment' AND json_extract(json,'$.data.note_id')=? AND json_extract(json,'$.data.kind')='memory_file'",[id]) {
+        for row in try db.rows("SELECT id,json FROM records WHERE kind='attachment' AND json_extract(json,'$.data.note_id')=? AND json_extract(json,'$.data.kind') IN ('memory_file','pinned_asset')",[id]) {
             let clean = try redacted(decode(row["json"]!))
             try db.exec("UPDATE records SET json=? WHERE id=?",[try encode(clean),row["id"]!]);try db.exec("INSERT OR IGNORE INTO outbox VALUES(?)",[row["id"]!])
             try put("attachment",clean["data"])

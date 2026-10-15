@@ -66,7 +66,7 @@ struct MioApplication: App {
             .commands {
                 CommandGroup(replacing: .newItem) {
                     Button(model.l("Новая заметка")) { Task { await model.createNote() } }.keyboardShortcut("n")
-                    Button(model.l("Новое пространство")) { model.showSpaceSheet = true }.keyboardShortcut("n", modifiers: [.command, .shift])
+                    Button(model.l("Новое пространство")) { model.editingSpace = .null;model.showSpaceSheet = true }.keyboardShortcut("n", modifiers: [.command, .shift])
                 }
                 CommandGroup(after: .importExport) {
                     Button(model.l("Добавить PDF или изображение…")) { Task { await model.chooseFileImport() } }.keyboardShortcut("i")

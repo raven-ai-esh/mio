@@ -36,11 +36,14 @@ swift test
 python3 scripts/check-space-catalog.py \
   --executable /Applications/Mio.app/Contents/MacOS/Mio \
   --receipt artifacts/catalog-check.json
+python3 scripts/check-note-management.py \
+  --executable /Applications/Mio.app/Contents/MacOS/Mio \
+  --receipt artifacts/note-management-check.json
 ```
 
 The automated suite uses synthetic data. A real iCloud file-provider test requires explicitly supplied isolated cloud/artifact directories and is skipped when they are unavailable. Unit tests do not substitute for native UI or real MCP/persistence verification.
 
-The catalog script creates a fresh temporary store, runs a real owner process and stdio MCP client, exercises permissions/pagination and checks the resulting SQLite state. It does not access your existing memory.
+The catalog and note-management scripts each create a fresh temporary store, run a real owner process and stdio MCP client, and check the persisted downstream state. The management script also exercises moves, metadata, history, original files, deletion/restoration and owner restart. It does not access your existing memory.
 
 ## Reproduce the demo
 

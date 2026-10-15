@@ -170,7 +170,7 @@ public final class CloudSyncCoordinator: @unchecked Sendable {
             }
             try checkBinding()
             if !remote.isEmpty {
-                _ = try store.execute("replica.merge", params: ["document": .object(["schema_version": .number(1), "format": .string("mio-records"), "records": .array(remote), "profiles": .array([])])])
+                _ = try store.execute("replica.merge", params: ["document": .object(["schema_version": .number(2), "format": .string("mio-records"), "records": .array(remote), "profiles": .array([])])])
                 // Late source bytes may normalize to an already known redaction.
                 // Even when SQLite needs no change, repair the stale cloud payload
                 // and retain a new exact-hash delivery requirement across restart.

@@ -10,8 +10,8 @@ extension MioStore {
         return .object(["schema_version": .number(Double(Self.schema)),"format": .string("mio-records"),"records": .array(records),"profiles": .array(profiles),"audit":.array(audit)])
     }
     func validateDocument(_ doc: JSONValue, strict: Bool = true) throws -> [JSONValue] {
-        guard doc["schema_version"].intValue == Self.schema, doc["format"].stringValue == "mio-records", case .array = doc["records"] else { throw MioError("archive_incompatible", "Unsupported Mio document schema") }
-        let allowed: Set<String> = ["space","revision","note.delete","note.redact","link","connection","session","session.purge","session.restore","event","attachment"]
+        guard [1,Self.schema].contains(doc["schema_version"].intValue), doc["format"].stringValue == "mio-records", case .array = doc["records"] else { throw MioError("archive_incompatible", "Unsupported Mio document schema") }
+        let allowed: Set<String> = ["space","revision","note.move","note.assets","note.delete","note.redact","link","connection","session","session.purge","session.restore","event","attachment"]
         var result: [JSONValue] = [], seen: Set<String> = []
         for raw in doc["records"].arrayValue {
             var d = raw.objectValue; let expected = d.removeValue(forKey:"content_hash")?.stringValue
@@ -22,6 +22,8 @@ extension MioStore {
             switch kind {
             case "revision":
                 guard data["id"].stringValue == entityID, data["note_id"].stringValue != nil, data["space_id"].stringValue != nil, data["title"].stringValue != nil, data["body"].stringValue != nil, data["timestamp"].stringValue != nil, data["status"].stringValue != nil, case .array = data["parent_ids"] else { throw MioError("archive_corrupt", "Invalid note revision") }
+            case "note.move", "note.assets": guard data["note_id"] == .string(entityID),data["space_id"].stringValue != nil else { throw MioError("archive_corrupt","Invalid note location or attachment binding") }
+                if kind == "note.assets",data["revision_id"].stringValue == nil { throw MioError("archive_corrupt","Missing attachment binding revision") }
             case "event":
                 guard data["id"].stringValue == entityID, data["session_id"].stringValue != nil, data["space_id"].stringValue != nil, data["source_id"].stringValue != nil, data["text"].stringValue != nil else { throw MioError("archive_corrupt", "Invalid history event") }
             case "space": guard data["name"].stringValue != nil else { throw MioError("archive_corrupt", "Invalid space") }
@@ -30,6 +32,7 @@ extension MioStore {
             case "connection": guard data["from_space_id"].stringValue != nil, data["to_space_id"].stringValue != nil, ["read","write"].contains(data["access"].stringValue ?? "") else { throw MioError("archive_corrupt", "Invalid connection") }
             case "attachment":
                 guard let b64 = data["bytes"].stringValue, let bytes = Data(base64Encoded:b64), data["sha256"].stringValue == hash(bytes), let path = data["relative_path"].stringValue, !path.hasPrefix("/"), !path.split(separator:"/").contains(".."), bytes.count <= 20_000_000 else { throw MioError("archive_corrupt", "Invalid attachment bytes or path") }
+                if data["kind"] == .string("pinned_asset") { guard data["id"] == .string(entityID),data["immutable"].boolValue,data["note_id"].stringValue != nil else { throw MioError("archive_corrupt","Invalid pinned asset owner") } }
                 if data["kind"] == .string("memory_file") {
                     guard data["id"] == .string(entityID),data["immutable"].boolValue,data["note_id"].stringValue != nil,data["captured_revision_id"].stringValue != nil,data["space_id"].stringValue != nil,data["file_version"].stringValue != nil,data["byte_count"].intValue==bytes.count else { throw MioError("archive_corrupt","Invalid immutable file identity") }
                     if !data["purged"].boolValue {
@@ -49,8 +52,10 @@ extension MioStore {
         let activePurgedSessions = Set(purgeRecords.filter { !clearedPurges.contains($0["id"].stringValue!) }.compactMap { $0["entity_id"].stringValue })
         var immutableEntities: [String:JSONValue] = [:]
         let boundFileIDs=Set(allRecords.filter{$0["kind"] == .string("attachment") && $0["data"]["kind"] == .string("memory_file")}.compactMap{$0["entity_id"].stringValue})
-        guard allRecords.filter{$0["kind"] == .string("attachment") && boundFileIDs.contains($0["entity_id"].stringValue ?? "")}.allSatisfy({$0["data"]["kind"] == .string("memory_file")}) else { throw MioError("invalid_replica","An immutable file cannot become a legacy attachment") }
-        for record in allRecords where ["revision","event"].contains(record["kind"].stringValue ?? "") || (record["kind"] == .string("attachment") && record["data"]["kind"] == .string("memory_file")) {
+        let pinnedIDs=Set(allRecords.filter{$0["kind"] == .string("attachment") && $0["data"]["kind"] == .string("pinned_asset")}.compactMap{$0["entity_id"].stringValue})
+        guard allRecords.filter({$0["kind"] == .string("attachment") && pinnedIDs.contains($0["entity_id"].stringValue ?? "")}).allSatisfy({$0["data"]["kind"] == .string("pinned_asset")}) else { throw MioError("invalid_replica","A pinned asset cannot become another attachment kind") }
+        guard allRecords.filter({$0["kind"] == .string("attachment") && boundFileIDs.contains($0["entity_id"].stringValue ?? "")}).allSatisfy({$0["data"]["kind"] == .string("memory_file")}) else { throw MioError("invalid_replica","An immutable file cannot become a legacy attachment") }
+        for record in allRecords where ["revision","event"].contains(record["kind"].stringValue ?? "") || (record["kind"] == .string("attachment") && ["memory_file","pinned_asset"].contains(record["data"]["kind"].stringValue ?? "")) {
             let kind = record["kind"].stringValue!, entityID = record["entity_id"].stringValue!, key = kind + ":" + entityID
             var data = record["data"].objectValue
             let purgeAllowed = ["revision","attachment"].contains(kind) ? redactedNotes.contains(data["note_id"]?.stringValue ?? "") : (purgedEvents.contains(entityID) || activePurgedSessions.contains(data["session_id"]?.stringValue ?? ""))
@@ -82,12 +87,19 @@ extension MioStore {
         for r in result where strict {
             let kind = r["kind"].stringValue!, data = r["data"]
             if ["revision","session","session.restore","event","attachment"].contains(kind) { guard spaces.contains(data["space_id"].stringValue ?? "") else { throw MioError("archive_corrupt", "Record references a missing space") } }
+            if ["note.move","note.assets"].contains(kind) {
+                for id in data["asset_ids"].arrayValue { guard allRecords.contains(where:{$0["kind"] == .string("attachment") && $0["entity_id"] == id && $0["data"]["kind"] == .string("pinned_asset") && $0["data"]["note_id"] == data["note_id"]}) else { throw MioError("archive_corrupt","Missing or foreign pinned attachment") } }
+                if let anchor=data["asset_revision_id"].stringValue { guard revisions.contains(where:{$0["id"] == .string(anchor) && $0["note_id"]==data["note_id"]}) else { throw MioError("archive_corrupt","Missing location attachment revision") } }
+                if kind == "note.assets" { guard revisions.contains(where:{$0["id"]==data["revision_id"] && $0["note_id"]==data["note_id"]}) else { throw MioError("archive_corrupt","Missing attachment binding revision") } }
+            }
+            if ["note.move","note.assets"].contains(kind) { guard noteIDs.contains(r["entity_id"].stringValue ?? ""),spaces.contains(data["space_id"].stringValue ?? "") else { throw MioError("archive_corrupt","Missing note location endpoint") } }
             if kind == "revision" { guard data["parent_ids"].arrayValue.allSatisfy({ revisionIDs.contains($0.stringValue ?? "") }) else { throw MioError("archive_corrupt", "Missing revision parent") } }
             if kind == "event" { guard sessions.contains(data["session_id"].stringValue ?? "") else { throw MioError("archive_corrupt", "Missing history session") } }
             if kind == "event",data["kind"].stringValue == "memory_operation",data["phase"].stringValue == "delivery",!data["purged"].boolValue {
                 guard let endID=data["execution_end_event_id"].stringValue, let end=allRecords.first(where:{$0["kind"].stringValue == "event" && $0["entity_id"].stringValue == endID})?["data"],end["phase"].stringValue == "end",end["interaction_id"] == data["interaction_id"],end["session_id"] == data["session_id"],end["space_id"] == data["space_id"] else { throw MioError("archive_corrupt","Delivery is missing its matching execution end") }
             }
             if kind == "link" { guard noteIDs.contains(data["from_note_id"].stringValue ?? ""),noteIDs.contains(data["to_note_id"].stringValue ?? "") else { throw MioError("archive_corrupt", "Missing link endpoint") } }
+            if kind == "attachment",data["kind"] == .string("pinned_asset") { guard noteIDs.contains(data["note_id"].stringValue ?? "") else { throw MioError("archive_corrupt","Missing pinned asset owner") } }
             if kind == "attachment", data["kind"] == .string("memory_file") {
                 guard let noteID=data["note_id"].stringValue, let revisionID=data["captured_revision_id"].stringValue,
                       let owner=revisions.first(where:{$0["id"] == .string(revisionID)}), owner["note_id"] == .string(noteID), owner["space_id"] == data["space_id"],
@@ -133,7 +145,7 @@ extension MioStore {
     func archiveExport(_ p: [String: JSONValue]) throws -> JSONValue {
         let path = try p.required("path"), document = try replicaDocument(), payload = try document.encoded()
         _ = try validateDocument(document,strict:true)
-        let archive: JSONValue = .object(["format": .string("mio-archive"),"schema_version": .number(1),"manifest": .object(["sha256": .string(hash(payload)),"record_count": .number(Double(document["records"].arrayValue.count)),"created_at": .string(now())]),"document": document])
+        let archive: JSONValue = .object(["format": .string("mio-archive"),"schema_version": .number(Double(Self.schema)),"manifest": .object(["sha256": .string(hash(payload)),"record_count": .number(Double(document["records"].arrayValue.count)),"created_at": .string(now())]),"document": document])
         try archive.encoded().write(to:URL(fileURLWithPath:path),options:.atomic)
         return .object(["path": .string(path),"sha256": .string(hash(payload)),"record_count": .number(Double(document["records"].arrayValue.count)),"excluded": .array([.string("credentials"),.string("cloud_cursors")])])
     }

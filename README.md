@@ -73,6 +73,12 @@ The build produces a ZIP and DMG in `dist/`. The installer verifies the package 
 
 The developer build is locally signed **ad hoc**, not notarized. Developer ID distribution is a future release step. See [building and testing](docs/BUILDING.md).
 
+### Organize your memory
+
+Select several notes with **⌘-click** or **Shift-click**. Move them to another space, change their status, or remove them together. Drag a note or selection onto a space in the sidebar to move it. Note IDs, links, files and version history stay attached; removed notes can be restored.
+
+Right-click a space to edit its name, description and color, create a child space, or change its parent. Choosing a parent highlights its descendants in Notes and the graph. Agent access connections are shown separately and remain explicit; nesting never grants additional access. Agents can discover the same authorized hierarchy through `read(kind="spaces")`.
+
 ### Your first workspace
 
 1. Create a space for a project.

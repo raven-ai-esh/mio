@@ -76,3 +76,28 @@ final class FileMemoryTests: XCTestCase {
         XCTAssertEqual(try store.entity("attachment",n["file_id"].stringValue!)?["bytes"],.string(""))
     }
 }
+
+extension FileMemoryTests {
+    func testMoveRebindsOriginalFilesFragmentsAndRejectsOldIndexJob() throws {
+        let a=try space("Old"),b=try space("New"),n=try capture(a,pdf("aurorafact visible after move"))
+        let old=try XCTUnwrap(store.nextSourceIndexJob(modelID:"lexical-native-v1"))
+        let inputs=try MioDocumentExtraction.fragments(file:old["file"],bytes:Data(base64Encoded:old["file"]["bytes"].stringValue!)!)
+        let docs=try store.sourceDocuments(job:old,fileFragments:inputs)
+        XCTAssertTrue(try store.publishSourceIndex(job:old,documents:docs))
+        let source=try XCTUnwrap(docs.first{$0["file_id"] != .null})["id"]
+        let pa=try call("profile.create",["space_id":a,"name":.string("A")]),pb=try call("profile.create",["space_id":b,"name":.string("B")])
+        let ca=AccessContext.agent(token:pa["token"].stringValue!),cb=AccessContext.agent(token:pb["token"].stringValue!)
+        _=try call("notes.bulk",["action":.string("move"),"note_ids":.array([n["id"]]),"space_id":b])
+        XCTAssertFalse(try store.publishSourceIndex(job:old,documents:docs))
+        XCTAssertEqual(try call("read",["kind":.string("source"),"id":source],cb)["space_id"],b)
+        XCTAssertEqual(try call("read",["kind":.string("source"),"id":n["file_id"]],cb)["sha256"],n["file"]["sha256"])
+        XCTAssertFalse(try call("search",["query":.string("aurorafact"),"scope":.string("files")],cb)["results"].arrayValue.isEmpty)
+        XCTAssertTrue(try call("search",["query":.string("aurorafact"),"scope":.string("files")],ca)["results"].arrayValue.isEmpty)
+        XCTAssertThrowsError(try call("read",["kind":.string("source"),"id":source],ca))
+        _=try call("space.delete",["space_id":a])
+        _=try call("note.update",["note_id":n["id"],"expected_revision":n["revision_id"],"title":.string("Still editable")],cb)
+        let out=root.appendingPathComponent("out")
+        XCTAssertEqual(try call("markdown.export",["path":.string(out.path),"space_ids":.array([b])])["attachments"].intValue,1)
+        XCTAssertEqual(try call("read",["kind":.string("source"),"id":n["file_id"]],cb)["space_id"],b)
+    }
+}

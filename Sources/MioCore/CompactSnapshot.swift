@@ -4,7 +4,7 @@ extension MioStore {
     func compactSnapshotNotes(_ scope: Scope) throws -> [JSONValue] {
         let removed = ["body","source_ids","parent_ids","cleared_deletions","timestamp","author","import_path","import_relative_path","import_source_namespace","restored_from","resolved_from"].map { "'$.\($0)'" }.joined(separator:",")
         let expression = "json_set(json_remove(json," + removed + "),'$.body_preview',coalesce(substr(json_extract(json,'$.body'),1,120),''),'$.body_omitted',json('true'))"
-        let allowed: Set<String> = ["id","note_id","space_id","title","status","revision_id","head_revision_ids","updated_at","deleted","has_conflict","purged","body_preview","body_omitted","file_ids","content_kind"]
+        let allowed: Set<String> = ["id","note_id","space_id","location_id","title","status","revision_id","head_revision_ids","updated_at","deleted","has_conflict","purged","body_preview","body_omitted","file_ids","content_kind"]
         let (condition,bindings) = snapshotScope(scope,kind:"note",excludeDeleted:!scope.human)
         return try db.rows("SELECT " + expression + " AS json FROM entities WHERE " + condition + " ORDER BY id",bindings).map { row in
             var values = try decodeProjected(row["json"]!).objectValue.filter { allowed.contains($0.key) }

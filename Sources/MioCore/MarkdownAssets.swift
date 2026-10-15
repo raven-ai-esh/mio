@@ -21,12 +21,21 @@ extension MioStore {
         let relativeNote = note["import_relative_path"].stringValue ?? ""
         let parent = (relativeNote as NSString).deletingLastPathComponent
         let relativeTarget = URL(fileURLWithPath:"/" + parent).appendingPathComponent(decoded).standardizedFileURL.path.dropFirst()
+        let pinnedIDs=Set(note["asset_ids"].arrayValue.compactMap(\.stringValue))
+        let pinned=assets.filter{pinnedIDs.contains($0["id"].stringValue ?? "")}
         let sourceScoped = assets.filter { asset in
+            if asset["kind"] == .string("pinned_asset") && !pinnedIDs.contains(asset["id"].stringValue ?? "") { return false }
             guard asset["space_id"] == note["space_id"] else { return false }
             if let namespace { return asset["source_namespace"].stringValue == namespace }
             if let sourceRoot = asset["source_root"].stringValue, let noteSource = note["import_path"].stringValue { return noteSource.hasPrefix(sourceRoot + "/") }
             return true
         }
+        let boundRelative=pinned.filter { $0["relative_path"].stringValue == String(relativeTarget) }
+        if !boundRelative.isEmpty { return boundRelative }
+        let boundRoot=pinned.filter { $0["relative_path"].stringValue == decoded }
+        if !boundRoot.isEmpty { return boundRoot }
+        let boundName=pinned.filter { (($0["relative_path"].stringValue ?? "") as NSString).lastPathComponent == decoded }
+        if !boundName.isEmpty { return boundName }
         let exact = sourceScoped.filter { $0["relative_path"].stringValue == String(relativeTarget) }
         if !exact.isEmpty { return exact }
         // Obsidian also permits a unique vault-relative path or basename.

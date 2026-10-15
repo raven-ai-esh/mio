@@ -355,7 +355,7 @@ extension MioStore {
             try requireVisibility(value,scope)
             if object["kind"] == .string("spaces") {
                 let current = try readSpaces(["offset":value["offset"],"limit":value["limit"]],scope)
-                guard ["default_space_id","spaces","total_count"].allSatisfy({value[$0] == current[$0]}) else {
+                guard ["default_space_id","spaces","total_count","connections"].allSatisfy({value[$0] == current[$0]}) else {
                     throw MioError("catalog_changed","Space names or permissions changed; request a fresh read(kind=spaces)")
                 }
             }
@@ -369,6 +369,14 @@ extension MioStore {
                       edge["from_note_id"] == value["from_note_id"], edge["to_note_id"] == value["to_note_id"],
                       try graphRelationFingerprint(edge) == value["relation_fingerprint"].stringValue else {
                     throw MioError("forbidden","Graph relation is unavailable or has changed")
+                }
+            }
+            if let id=object["id"]?.stringValue,object["space_id"] != nil {
+                for kind in ["note","revision","attachment","link"] {
+                    if let stored=try entity(kind,id) {
+                        guard try currentOwnership(stored,kind:kind)["space_id"] == value["space_id"] else { throw MioError("location_changed","Memory moved; request a fresh read") }
+                        break
+                    }
                 }
             }
             if let id=object["id"]?.stringValue {
