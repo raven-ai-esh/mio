@@ -19,19 +19,33 @@ extension MioStore {
         for file in files.sorted(by: { $0.path < $1.path }) where file.pathExtension.lowercased() == "md" {
             guard (try file.resourceValues(forKeys:[.fileSizeKey]).fileSize ?? 0) < 5_000_000 else { throw MioError("file_too_large", "Markdown note exceeds 5 MB") }
             let relative = String(file.path.dropFirst(basePath.count + 1)), key = basePath + "/" + relative
-            var body = try String(contentsOf:file,encoding:.utf8), title = file.deletingPathExtension().lastPathComponent, status = "unverified"
+            var body = try String(contentsOf:file,encoding:.utf8), title = file.deletingPathExtension().lastPathComponent
+            var status: String?
+            var sources: JSONValue?
             if body.hasPrefix("---\nmio: "), let end = body.range(of:"\n---\n",range:body.index(body.startIndex,offsetBy:4)..<body.endIndex) {
                 let line = String(body[body.index(body.startIndex,offsetBy:9)..<end.lowerBound])
-                if let meta = try? JSONValue.decode(Data(line.utf8)) { title = meta["title"].stringValue ?? title; status = meta["status"].stringValue ?? status }
+                if let meta = try? JSONValue.decode(Data(line.utf8)) {
+                    title = meta["title"].stringValue ?? title; status = meta["status"].stringValue
+                    sources = meta.objectValue["source_ids"]
+                    if let sources {
+                        guard case .array = sources else { throw MioError("invalid_params", "Source IDs must be an array") }
+                        try validateSources(sources,s)
+                    }
+                }
                 body = String(body[end.upperBound...])
             }
             let old = try all("note").first { $0["space_id"].stringValue == space && $0["import_path"].stringValue == key }
             let result: JSONValue
             if let old, !old["deleted"].boolValue {
-                if old["body"].stringValue == body && old["title"].stringValue == title { result = .object(["note_id":old["id"]]) }
-                else { result = try changeNote("note.update",["note_id":old["id"],"expected_revision":old["revision_id"],"title":.string(title),"body":.string(body),"status":.string(status)],s) }
+                let retainedSources = sources ?? old["source_ids"]
+                let retainedStatus = status.map(JSONValue.string) ?? old["status"]
+                if old["body"].stringValue == body && old["title"].stringValue == title && old["status"] == retainedStatus && old["source_ids"] == retainedSources { result = .object(["note_id":old["id"]]) }
+                else {
+                    guard !old["has_conflict"].boolValue else { throw MioError("revision_conflict", "Resolve the note's conflicting versions before importing an update") }
+                    result = try changeNote("note.update",["note_id":old["id"],"expected_revision":old["revision_id"],"title":.string(title),"body":.string(body),"status":retainedStatus,"source_ids":retainedSources],s)
+                }
             } else if old != nil { warnings.append(.object(["file":.string(relative),"reason":.string("deleted_note_skipped")])); continue }
-            else { result = try createNote(["space_id":.string(space),"title":.string(title),"body":.string(body),"status":.string(status),"import_path":.string(key),"import_relative_path":.string(relative),"import_source_namespace":.string(sourceNamespace)],s) }
+            else { result = try createNote(["space_id":.string(space),"title":.string(title),"body":.string(body),"status":.string(status ?? "unverified"),"source_ids":sources ?? .array([]),"import_path":.string(key),"import_relative_path":.string(relative),"import_source_namespace":.string(sourceNamespace)],s) }
             imported.append((file,try entity("note",result["note_id"].stringValue!)!))
         }
         for (file,note) in imported {
