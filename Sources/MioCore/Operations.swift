@@ -184,8 +184,12 @@ extension MioStore {
         let visibleEventBindings = eventBindings + eventScopeBindings
         let eventCount = Int(try db.rows("SELECT count(*) AS n FROM entities WHERE " + visibleEventWhere,visibleEventBindings).first?["n"] ?? "0") ?? 0
         let events = compact ? try compactSnapshotEvents(s) : try db.rows("SELECT json FROM entities WHERE " + visibleEventWhere + " ORDER BY json_extract(json,'$.timestamp') DESC LIMIT 200",visibleEventBindings).map { try decode($0["json"]!) }
+        // The owner already has all note metadata. Avoid decoding two full
+        // note bodies per edge on every UI refresh; agent checks stay scoped.
+        let ownerEndpoints = s.human ? Set(notes.filter { !$0["deleted"].boolValue && s.readable.contains($0["space_id"].stringValue ?? "") }.compactMap { $0["id"].stringValue }) : nil
         let links = try all("link").filter { link in
             guard !link["deleted"].boolValue else { return s.human }
+            if let ownerEndpoints { return ownerEndpoints.contains(link["from_note_id"].stringValue ?? "") && ownerEndpoints.contains(link["to_note_id"].stringValue ?? "") }
             return (try? requireEntity("note",link["from_note_id"].stringValue ?? "",s)) != nil && (try? requireEntity("note",link["to_note_id"].stringValue ?? "",s)) != nil
         }
         let profiles = s.human ? try all("profile").map { v -> JSONValue in var d = v.objectValue; d.removeValue(forKey:"token_hash"); return .object(d) } : []

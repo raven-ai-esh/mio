@@ -128,7 +128,7 @@ struct SettingsView: View {
                 Text(model.l("Applies immediately. Notes keep their original language.")).font(.caption).foregroundStyle(.secondary)
             }
             Section("Mio") {
-                LabeledContent(model.l("Версия"), value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.4.2")
+                LabeledContent(model.l("Версия"), value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.4.3")
                 LabeledContent(model.l("Хранилище"), value: model.l("Локальная SQLite"))
                 Text(MioPaths.directory.path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 Button(model.l("Показать папку данных")) { NSWorkspace.shared.open(MioPaths.directory) }

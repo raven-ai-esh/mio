@@ -54,8 +54,8 @@ for dependency in (runtime_build / 'SourcePackages/checkouts').iterdir():
 info = {
     'CFBundleName': 'Mio', 'CFBundleDisplayName': 'Mio',
     'CFBundleIdentifier': 'app.mio.memory', 'CFBundleExecutable': 'Mio',
-    'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': '0.4.2',
-    'CFBundleVersion': '10', 'LSMinimumSystemVersion': '15.0',
+    'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': '0.4.3',
+    'CFBundleVersion': '11', 'LSMinimumSystemVersion': '15.0',
     'CFBundleDevelopmentRegion': 'en', 'CFBundleLocalizations': ['en', 'ru'],
     'NSHighResolutionCapable': True, 'NSPrincipalClass': 'NSApplication',
     'CFBundleIconFile': 'AppIcon',
