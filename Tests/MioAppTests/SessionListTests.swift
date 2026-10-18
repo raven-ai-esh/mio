@@ -44,6 +44,43 @@ import MioBridge
         model.snapshot = .object(["sessions": .array(rows.reversed())])
         XCTAssertEqual(model.sessions.map(\.id), ["a-tie", "z-tie", "late-offset"])
     }
+    func testReadingSessionCountDoesNotRepeatDateParsingAndSorting() {
+        let rows=(0..<141).map { session("row-\($0)",String(format:"2026-10-%02dT12:%02d:00.000Z",1+$0%18,$0%60),"") }
+        model.snapshot = .object(["sessions":.array(rows)])
+        XCTAssertEqual(model.sessions.count,141)
+        let start=ContinuousClock.now
+        for _ in 0..<3 { XCTAssertEqual(model.sessions.count,141) }
+        XCTAssertLessThan(start.duration(to:.now),.milliseconds(500),"Rendering the sidebar count must not sort all session dates again")
+    }
+    func testPickerLabelsFollowProfileLanguageCalendarAndTimeZone() async {
+        model.setInterfaceLanguage(.english)
+        let row:JSONValue = .object(["id":.string("picker"),"source":.string("memory_operations_v1"),"actor":.string("profile"),"opened_at":.string("2026-10-18T01:30:00.000Z")])
+        model.snapshot = .object(["sessions":.array([row]),"profiles":.array([.object(["id":.string("profile"),"name":.string("Original")])])])
+        XCTAssertEqual(model.sessionPickerLabel(row),"Original · "+model.date(row["opened_at"]))
+        var fields=model.snapshot.fields;fields["profiles"] = .array([.object(["id":.string("profile"),"name":.string("Renamed")])]);model.snapshot = .object(fields)
+        XCTAssertEqual(model.sessionPickerLabel(row),"Renamed · "+model.date(row["opened_at"]))
+        model.setInterfaceLanguage(.russian);await model.refreshSessionPresentation()
+        XCTAssertEqual(model.sessionPickerLabel(row),"Renamed · "+model.date(row["opened_at"]))
+        var projection=SessionListProjection();projection.update([row])
+        var context=SessionPickerContext(locale:Locale(identifier:"en_US"),timeZone:TimeZone(secondsFromGMT:0)!,calendar:Calendar(identifier:.gregorian),fallbackName:"Agent")
+        projection.preparePickerLabels(profiles:[],context:context)
+        let utc=projection.pickerLabels["picker"]
+        context.timeZone=TimeZone(secondsFromGMT:-8*3600)!
+        projection.preparePickerLabels(profiles:[],context:context)
+        XCTAssertNotEqual(utc,projection.pickerLabels["picker"])
+        let western=projection.pickerLabels["picker"]
+        context.calendar=Calendar(identifier:.buddhist)
+        projection.preparePickerLabels(profiles:[],context:context)
+        XCTAssertNotEqual(western,projection.pickerLabels["picker"])
+    }
+    func testCancelledViewReadKeepsItsExistingBoundedReadSemantics() async throws {
+        let home=try await model.execute("space.create",["name":.string("View lifecycle")])["id"]
+        let task=Task { @MainActor in try await model.execute("read",["kind":.string("spaces")]) }
+        task.cancel()
+        let value=try await task.value
+        XCTAssertTrue(value["spaces"].items.contains{$0.id == home.text})
+        XCTAssertTrue(model.failure.isEmpty)
+    }
     func testNewIPCSessionAppearsAutomaticallyAndKeepsSelectedReplay() async throws {
         let home = try await model.execute("space.create", ["name": .string("Session list QA")])["id"]
         let profile = try await model.execute("profile.create", ["name": .string("List QA"), "space_id": home])

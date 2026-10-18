@@ -2,7 +2,7 @@ import Foundation
 import CSQLite
 
 extension MioStore {
-    func dispatch(_ method: String, _ p: [String: JSONValue], _ s: Scope) throws -> JSONValue {
+    func dispatch(_ method: String, _ p: [String: JSONValue], _ s: Scope, semantic:Result<MioSemanticQuery,MioError>? = nil) throws -> JSONValue {
         switch method {
         case "diagnostics": return .object(["schema_version": .number(Double(Self.schema)), "sqlite_version": .string(String(cString: sqlite3_libversion())), "fts5": .bool(sqlite3_compileoption_used("ENABLE_FTS5") != 0), "integrity": .string(try db.rows("PRAGMA integrity_check").first?.values.first ?? "unknown")])
         case "interaction.session.begin", "interaction.session.end", "interaction.call.begin", "interaction.call.reject", "interaction.call.delivery": return try interactionControl(method,p,s)
@@ -61,7 +61,7 @@ extension MioStore {
         case "profile.revoke":
             let id = try p.required("profile_id"); guard var d = try entity("profile",id)?.objectValue else { throw MioError("not_found", "Profile not found") }
             d["revoked"] = .bool(true); try put("profile",.object(d)); d.removeValue(forKey:"token_hash"); return .object(d)
-        case "search": return try search(p,s)
+        case "search": return try search(p,s,semantic:semantic)
         case "search.rebuild": try rebuildSearchIndex(); return .object(["status":.string("rebuilt"),"documents":.number(Double(try db.rows("SELECT count(*) AS n FROM search_documents").first?["n"] ?? "0") ?? 0)])
         case "read": return try read(p,s)
         case "history.import", "history.restore": return try importHistory(p,s,restore:method == "history.restore")
@@ -75,6 +75,11 @@ extension MioStore {
             let pending = try db.rows("SELECT records.id,records.json FROM outbox JOIN records ON records.id=outbox.record_id ORDER BY records.id").map { row -> JSONValue in .object(["id":.string(row["id"]!),"content_hash":.string(hash(try decode(row["json"]!).encoded()))]) }
             let deferred = try pendingDependencyCount()
             return .object(["records":.array(pending),"record_ids":.array(pending.map { $0["id"] }),"count":.number(Double(pending.count)),"pending_dependencies":.number(Double(deferred))])
+        case "sync.inventory": return .object(["records":.array(try recordInventory())])
+        case "sync.status":
+            var status:[String:JSONValue] = ["count":.number(Double(try db.rows("SELECT count(*) AS n FROM outbox").first?["n"] ?? "0") ?? 0),"pending_dependencies":.number(Double(try pendingDependencyCount()))]
+            if p["include_ids"]?.boolValue == true { status["record_ids"] = .array(try db.rows("SELECT record_id FROM outbox ORDER BY record_id").map{.string($0["record_id"]!)}) }
+            return .object(status)
         case "sync.queue":
             let deliveries = p["records"]?.arrayValue ?? []; var queued = 0, rejected = 0
             for delivery in deliveries { guard let id = delivery["id"].stringValue, let expected = delivery["content_hash"].stringValue, let row = try db.rows("SELECT json FROM records WHERE id=?",[id]).first, expected == hash(try decode(row["json"]!).encoded()) else { rejected += 1; continue }; try db.exec("INSERT OR IGNORE INTO outbox VALUES(?)",[id]); queued += 1 }
@@ -168,16 +173,27 @@ extension MioStore {
         }
         return .object(d)
     }
-    func snapshot(_ s: Scope, projection: String = "full") throws -> JSONValue {
+    func snapshot(_ s: Scope, projection: String = "full", sections:Set<String> = MioStore.workspaceSections) throws -> JSONValue {
         guard ["full","compact"].contains(projection) else { throw MioError("invalid_params","Snapshot projection must be full or compact") }
         let compact = projection == "compact"
         func visible(_ v: JSONValue) -> Bool { !v["deleted"].boolValue && s.readable.contains(v["space_id"].stringValue ?? "") }
+        var result:[String:JSONValue]=["projection":.string(projection),"bodies_omitted":.bool(compact)],counts=[String:JSONValue]()
+        if sections.contains("catalog") {
         let spaces = try all("space").filter { s.human || s.readable.contains($0["id"].stringValue ?? "") }.map { space -> JSONValue in
             guard !s.human,let parent=space["parent_id"].stringValue,!s.readable.contains(parent) else { return space }
             var fields=space.objectValue;fields["parent_id"] = .null;return .object(fields)
         }
-        let notes = compact ? try compactSnapshotNotes(s) : try all("note").filter { s.human || visible($0) }.map { sanitizeSources($0,s) }
-        let sessions = try all("session").filter { s.human || visible($0) }.compactMap { try visibleSession($0,s) }
+        result["spaces"] = .array(spaces)
+        result["profiles"] = .array(s.human ? try all("profile").map { v -> JSONValue in var d=v.objectValue;d.removeValue(forKey:"token_hash");return .object(d) }:[])
+        result["connections"] = .array(try all("connection").filter { s.human || (!$0["deleted"].boolValue && s.readable.contains($0["from_space_id"].stringValue ?? "") && s.readable.contains($0["to_space_id"].stringValue ?? "")) })
+        counts["spaces"] = .number(Double(spaces.filter { !$0["deleted"].boolValue }.count))
+        }
+        if sections.contains("history") {
+            let sessions=try snapshotSessions(s)
+            result["sessions"] = .array(sessions)
+            counts["sessions"] = .number(Double(sessions.filter { !$0["deleted"].boolValue }.count))
+        }
+        if sections.contains("activity") {
         let eventWhere: String, eventBindings: [String]
         if s.human { eventWhere = "kind='event'"; eventBindings = [] }
         else if !s.readable.isEmpty { eventWhere = "kind='event' AND json_extract(json,'$.space_id') IN (" + Array(repeating:"?",count:s.readable.count).joined(separator:",") + ")"; eventBindings = s.readable.sorted() }
@@ -187,6 +203,13 @@ extension MioStore {
         let visibleEventBindings = eventBindings + eventScopeBindings
         let eventCount = Int(try db.rows("SELECT count(*) AS n FROM entities WHERE " + visibleEventWhere,visibleEventBindings).first?["n"] ?? "0") ?? 0
         let events = compact ? try compactSnapshotEvents(s) : try db.rows("SELECT json FROM entities WHERE " + visibleEventWhere + " ORDER BY json_extract(json,'$.timestamp') DESC LIMIT 200",visibleEventBindings).map { try decode($0["json"]!) }
+        result["events"] = .array(events)
+        result["interactions"] = .array(try visibleInteractions(s))
+        result["audit"] = .array(s.human ? try db.rows("SELECT json FROM audit ORDER BY rowid DESC LIMIT 200").map { try decode($0["json"]!) }:[])
+        counts["events"] = .number(Double(eventCount))
+        }
+        if sections.contains("memory") {
+        let notes = compact ? try compactSnapshotNotes(s) : try all("note").filter { s.human || visible($0) }.map { sanitizeSources($0,s) }
         // The owner already has all note metadata. Avoid decoding two full
         // note bodies per edge on every UI refresh; agent checks stay scoped.
         let ownerEndpoints = s.human ? Set(notes.filter { !$0["deleted"].boolValue && s.readable.contains($0["space_id"].stringValue ?? "") }.compactMap { $0["id"].stringValue }) : nil
@@ -197,10 +220,12 @@ extension MioStore {
             return (try? requireEntity("note",link["from_note_id"].stringValue ?? "",s)) != nil && (try? requireEntity("note",link["to_note_id"].stringValue ?? "",s)) != nil
         }
         let projectedLinks=links.map { link -> JSONValue in var value=link.objectValue; if let space=noteSpaces[link["from_note_id"].stringValue ?? ""] { value["space_id"]=space }; return .object(value) }
-        let profiles = s.human ? try all("profile").map { v -> JSONValue in var d = v.objectValue; d.removeValue(forKey:"token_hash"); return .object(d) } : []
-        let audit = s.human ? try db.rows("SELECT json FROM audit ORDER BY rowid DESC LIMIT 200").map { try decode($0["json"]!) } : []
-        let connections = try all("connection").filter { s.human || (!$0["deleted"].boolValue && s.readable.contains($0["from_space_id"].stringValue ?? "") && s.readable.contains($0["to_space_id"].stringValue ?? "")) }
-        return .object(["projection":.string(projection),"bodies_omitted":.bool(compact),"spaces": .array(spaces),"notes": .array(notes),"links": .array(projectedLinks),"connections": .array(connections),"profiles": .array(profiles),"sessions": .array(sessions),"events": .array(events),"interactions":.array(try visibleInteractions(s)),"audit": .array(audit),"counts": .object(["spaces": .number(Double(spaces.filter { !$0["deleted"].boolValue }.count)),"notes": .number(Double(notes.filter { !$0["deleted"].boolValue }.count)),"sessions": .number(Double(sessions.filter { !$0["deleted"].boolValue }.count)),"events": .number(Double(eventCount))]),"pending_sync": .number(s.human ? Double(try db.rows("SELECT count(*) AS n FROM outbox").first?["n"] ?? "0") ?? 0 : 0)])
+        result["notes"] = .array(notes);result["links"] = .array(projectedLinks)
+        counts["notes"] = .number(Double(notes.filter { !$0["deleted"].boolValue }.count))
+        }
+        if sections.contains("queue") { result["pending_sync"] = .number(s.human ? Double(try db.rows("SELECT count(*) AS n FROM outbox").first?["n"] ?? "0") ?? 0:0) }
+        result["counts"] = .object(counts)
+        return .object(result)
     }
     func importHistory(_ p: [String: JSONValue], _ s: Scope, restore: Bool) throws -> JSONValue {
         let space = try p.required("space_id"); try requireSpace(space,s,write:true)

@@ -19,7 +19,7 @@ extension MioStore {
     public func configureSourceImages(_ renderer: @escaping (JSONValue,Data,JSONValue) throws -> Data) {
         lock.lock(); defer { lock.unlock() }; sourceImageRenderer = renderer
     }
-    private func indexSignature(_ note: JSONValue, modelID: String, location: Bool = true) throws -> String {
+    func indexSignature(_ note: JSONValue, modelID: String, location: Bool = true) throws -> String {
         var fields: [String:JSONValue] = ["note_id":note["id"],"revision_id":note["revision_id"],"file_ids":note["file_ids"],"extractor":.string(MioDocumentExtraction.version),"model":.string(modelID)]
         if location { fields["space_id"]=note["space_id"] }
         return hash(try JSONValue.object(fields).encoded())
@@ -33,32 +33,33 @@ extension MioStore {
         }
         if let job=try db.rows("SELECT model_id,state,signature FROM source_index_jobs WHERE note_id=?",[id]).first {
             let matching=job["signature"] == (try indexSignature(previous,modelID:job["model_id"]!))
-            if job["state"] == "indexing" || !matching { try db.exec("DELETE FROM source_index_jobs WHERE note_id=?",[id]) }
+            if job["state"] == "indexing" || !matching { try queueSourceIndex(id) }
             else { try db.exec("UPDATE source_index_jobs SET signature=? WHERE note_id=?",[try indexSignature(note,modelID:job["model_id"]!),id]) }
         }
         try db.exec("INSERT INTO metadata(key,value) VALUES('source_index_generation','1') ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1")
     }
     func upgradeSourceIndexLocationSignatures() throws {
         // Preserve vectors only when the old job still matches this revision.
-        try db.exec("DELETE FROM source_index_jobs WHERE state='indexing'")
+        try db.exec("UPDATE source_index_jobs SET state='pending',error='' WHERE state='indexing'")
         for row in try db.rows("SELECT jobs.note_id,jobs.model_id,jobs.signature,json_object('id',notes.id,'space_id',json_extract(notes.json,'$.space_id'),'revision_id',json_extract(notes.json,'$.revision_id'),'file_ids',json_extract(notes.json,'$.file_ids')) AS note FROM source_index_jobs jobs JOIN entities notes ON notes.kind='note' AND notes.id=jobs.note_id") {
             let note=try decode(row["note"]!)
             if row["signature"] == (try indexSignature(note,modelID:row["model_id"]!,location:false)) {
                 try db.exec("UPDATE source_index_jobs SET signature=? WHERE note_id=?",[try indexSignature(note,modelID:row["model_id"]!),row["note_id"]!])
-            } else { try db.exec("DELETE FROM source_index_jobs WHERE note_id=?",[row["note_id"]!]) }
+            } else { try queueSourceIndex(row["note_id"]!) }
         }
     }
     public func nextSourceIndexJob(modelID: String) throws -> JSONValue? {
         lock.lock();defer{lock.unlock()}
-        let allowed=try scope(.human).readable
-        for note in try all("note") where allowed.contains(note["space_id"].stringValue ?? "") && !note["deleted"].boolValue && !note["purged"].boolValue && note["status"] != .string("purged") {
+        try selectSourceModel(modelID)
+        for _ in 0..<32 {
+            guard let id=try db.rows("SELECT jobs.note_id"+liveSourceJobJoin+" WHERE jobs.state='pending' ORDER BY jobs.note_id LIMIT 1").first?["note_id"],let note=try entity("note",id) else { return nil }
             let signature=try indexSignature(note,modelID:modelID)
-            let state=try db.rows("SELECT signature,model_id,state FROM source_index_jobs WHERE note_id=?",[note["id"].stringValue!]).first
-            if state?["signature"]==signature,state?["model_id"]==modelID,["ready","lexical","error"].contains(state?["state"] ?? "") { continue }
             var job:[String:JSONValue] = ["note":note,"signature":.string(signature),"model_id":.string(modelID)]
             if let id=note["file_ids"].arrayValue.first?.stringValue {
                 do { job["file"] = try requireFile(id,scope(.human)) }
-                catch let error as MioError where ["forbidden","not_found","source_purged"].contains(error.code) { continue }
+                catch let error as MioError where ["forbidden","not_found","source_purged"].contains(error.code) {
+                    try db.exec("UPDATE source_index_jobs SET state='error',error=? WHERE note_id=?",[error.localizedDescription,id]);continue
+                }
             }
             try db.exec("INSERT OR REPLACE INTO source_index_jobs VALUES(?,?,?,'indexing','')",[note["id"].stringValue!,signature,modelID])
             return .object(job)
@@ -108,21 +109,13 @@ extension MioStore {
         lock.lock();defer{lock.unlock()}
         try db.exec("UPDATE source_index_jobs SET state='error',error=? WHERE note_id=? AND signature=?",[String(error.prefix(500)),job["note"]["id"].stringValue!,job["signature"].stringValue!])
     }
-    public func resetSourceIndexErrors() throws { lock.lock();defer{lock.unlock()};try db.exec("DELETE FROM source_index_jobs WHERE state='error'") }
+    public func resetSourceIndexErrors() throws { lock.lock();defer{lock.unlock()};try db.exec("UPDATE source_index_jobs SET state='pending',error='' WHERE state='error'") }
     public func sourceIndexStatus() throws -> JSONValue {
         lock.lock();defer{lock.unlock()}
         var values:[String:JSONValue]=[:]
-        let allowed=try scope(.human).readable
-        var counts:[String:Int]=[:]
-        var errors:[JSONValue]=[]
-        for note in try all("note") where allowed.contains(note["space_id"].stringValue ?? "") && !note["deleted"].boolValue && !note["purged"].boolValue && note["status"] != .string("purged") {
-            let job=try db.rows("SELECT * FROM source_index_jobs WHERE note_id=?",[note["id"].stringValue!]).first
-            let matching=try job.map { $0["signature"] == (try indexSignature(note,modelID:$0["model_id"]!)) } ?? false
-            counts[matching ? job!["state"]!:"pending",default:0]+=1
-            if matching,job?["state"]=="error" { errors.append(.object(["note_id":note["id"],"title":note["title"],"error":.string(job?["error"] ?? "")])) }
-        }
-        for (state,count) in counts { values[state] = .number(Double(count)) }
-        values["errors"] = .array(Array(errors.prefix(20)))
+        for row in try db.rows("SELECT jobs.state,count(*) AS n"+liveSourceJobJoin+" GROUP BY jobs.state") { values[row["state"]!] = .number(Double(row["n"]!) ?? 0) }
+        let errors=try db.rows("SELECT jobs.note_id,jobs.error,json_extract(notes.json,'$.title') AS title"+liveSourceJobJoin+" JOIN entities notes ON notes.kind='note' AND notes.id=jobs.note_id WHERE jobs.state='error' ORDER BY jobs.note_id LIMIT 20").map { row -> JSONValue in .object(["note_id":.string(row["note_id"]!),"title":.string(row["title"] ?? ""),"error":.string(row["error"] ?? "")]) }
+        values["errors"] = .array(errors)
         values["generation"] = .string(try db.rows("SELECT value FROM metadata WHERE key='source_index_generation'").first?["value"] ?? "0")
         values["fragments"] = .number(Double(try db.rows("SELECT count(*) AS n FROM source_fragments WHERE current=1").first?["n"] ?? "0") ?? 0)
         return .object(values)

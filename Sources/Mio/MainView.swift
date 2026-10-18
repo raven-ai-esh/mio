@@ -100,6 +100,8 @@ struct MainView: View {
             }.padding(28).frame(width: 570)
         }
         .onReceive(NotificationCenter.default.publisher(for: .mioMemoryChanged).debounce(for: .milliseconds(100), scheduler: RunLoop.main)) { _ in Task { await model.refresh() } }
+        .onReceive(NotificationCenter.default.publisher(for:NSLocale.currentLocaleDidChangeNotification)) { _ in Task { await model.refreshSessionPresentation(force:true) } }
+        .onReceive(NotificationCenter.default.publisher(for:.NSSystemTimeZoneDidChange)) { _ in Task { await model.refreshSessionPresentation(force:true) } }
         .alert("Mio", isPresented: Binding(get: { !model.failure.isEmpty }, set: { if !$0 { model.failure = "" } })) { Button(model.l("Понятно")) { model.failure = "" } } message: { Text(model.l(model.failure)) }
         }
     }

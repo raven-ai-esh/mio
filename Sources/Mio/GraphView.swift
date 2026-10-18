@@ -88,7 +88,7 @@ struct GraphWorkspace: View {
             HStack {
                 Picker(model.l("Соединение MCP"),selection:Binding(get:{graph.sessionID},set:{ id in Task { await graph.loadSession(id,using:model) } })) {
                     Text(model.l("Выберите сохранённое соединение")).tag("")
-                    ForEach(model.sessions) { session in Text("\(model.sessionName(session)) · \(model.date(session["opened_at"]))").tag(session.id) }
+                    ForEach(model.sessions) { session in Text(model.sessionPickerLabel(session)).tag(session.id) }
                     if !graph.sessionID.isEmpty && !model.sessions.contains(where:{$0.id==graph.sessionID}) { Text(model.l("Выбранное соединение")).tag(graph.sessionID) }
                 }.labelsHidden().frame(maxWidth:480).accessibilityLabel(model.l("Соединение MCP")).accessibilityIdentifier("graph.session")
                 Spacer()

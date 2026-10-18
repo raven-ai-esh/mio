@@ -8,7 +8,16 @@ import MioEmbeddings
 import UniformTypeIdentifiers
 
 @MainActor final class AppModel: ObservableObject {
-    @Published var snapshot: JSONValue = .object([:])
+    @Published var snapshot: JSONValue = .object([:]) {
+        didSet {
+            sessionProjection.update(snapshot["sessions"].items)
+            sessionProjection.preparePickerLabels(profiles:snapshot["profiles"].items,context:sessionPickerContext)
+            noteProjection.update(notes:snapshot["notes"].items,spaces:snapshot["spaces"].items,selected:notesFocusedSpaceIDs)
+        }
+    }
+    private var sessionProjection=SessionListProjection()
+    private var noteProjection=NoteListProjection()
+    private var workspaceTokens=[String:String]()
     @Published private(set) var loadingMemory = true
     @Published var tab = "notes"
     @Published var selectedSpace: String = ""
@@ -18,7 +27,9 @@ import UniformTypeIdentifiers
     @Published var editingSpace: JSONValue = .null
     @Published var connectionSourceSpaceID = ""
     let dragSessionID = UUID().uuidString
-    @Published private(set) var notesFocusedSpaceIDs = Set<String>()
+    @Published private(set) var notesFocusedSpaceIDs = Set<String>() {
+        didSet { noteProjection.update(notes:snapshot["notes"].items,spaces:snapshot["spaces"].items,selected:notesFocusedSpaceIDs) }
+    }
     private var notesSidebarSpaceID: String?
     @Published private(set) var noteDetail: JSONValue = .null
     @Published private(set) var noteLoading = false
@@ -48,6 +59,8 @@ import UniformTypeIdentifiers
     private var cloudGeneration = 0
     private var cloudRunning = false
     private var loop: Task<Void, Never>?
+    private var cloudLoop: Task<Void,Never>?
+    private var cloudRetry=CloudRetrySchedule()
     private var searchTask: Task<Void, Never>?
     private var modelDownloadTask: Task<Void, Never>?
     private var refreshGeneration = 0
@@ -57,6 +70,14 @@ import UniformTypeIdentifiers
     var interfaceLanguage: MioLanguage { MioLanguage(rawValue: preferences.interfaceLanguage) ?? .system }
     var localizer: MioLocalizer { .init(language: interfaceLanguage) }
     var locale: Locale { interfaceLanguage.locale }
+    private var sessionPickerContext:SessionPickerContext { .init(locale:locale,timeZone:.current,calendar:.current,fallbackName:l("Подключение агента")) }
+    func sessionPickerLabel(_ session:JSONValue) -> String { sessionProjection.pickerLabels[session.id] ?? sessionName(session)+" · "+date(session["opened_at"]) }
+    func refreshSessionPresentation(force:Bool = false) async {
+        let previous=sessionProjection,profiles=self.profiles,context=sessionPickerContext
+        let prepared=await Task.detached { var value=previous;value.preparePickerLabels(profiles:profiles,context:context,force:force);return value }.value
+        guard context == sessionPickerContext,profiles == self.profiles,sessionProjection.hasSameRows(as:prepared) else { return }
+        objectWillChange.send();sessionProjection=prepared
+    }
     func l(_ key: String, _ arguments: String...) -> String { localizer.text(key, arguments) }
     func date(_ value: JSONValue) -> String { MioFormat.date(value, locale: locale) }
     func status(_ value: String) -> String { l(MioFormat.status(value)) }
@@ -64,6 +85,7 @@ import UniformTypeIdentifiers
         guard preferences.interfaceLanguage != language.rawValue else { return }
         preferences.interfaceLanguage = language.rawValue
         preferences.save()
+        Task { await refreshSessionPresentation() }
     }
 
     init(startIndexing: Bool = true) {
@@ -88,14 +110,18 @@ import UniformTypeIdentifiers
             if startIndexing { indexing.start() }
             Task { await refresh(); await reconnectCloud() }
             loop = Task { [weak self] in
-                var ticks = 0
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .seconds(3))
                     guard let self else { break }
                     await self.refresh()
                     await self.refreshIndexing()
-                    ticks += 1
-                    if ticks % 5 == 0 { await self.synchronizeCloud() }
+                }
+            }
+            cloudLoop=Task { [weak self] in
+                while !Task.isCancelled {
+                    try? await Task.sleep(for:.seconds(15))
+                    guard !Task.isCancelled,let self else { break }
+                    await self.synchronizeCloud(automatic:true)
                 }
             }
         } catch {
@@ -105,16 +131,10 @@ import UniformTypeIdentifiers
         }
     }
     var spaces: [JSONValue] { snapshot["spaces"].items.filter { !$0["deleted"].flag } }
-    var allNotes: [JSONValue] { snapshot["notes"].items.filter { !$0["deleted"].flag && !$0["redacted"].flag && !$0["purged"].flag && $0["status"].text != "purged" } }
-    var deletedNotes: [JSONValue] { snapshot["notes"].items.filter { $0["deleted"].flag && !$0["redacted"].flag && !$0["purged"].flag && $0["status"].text != "purged" } }
+    var allNotes: [JSONValue] { noteProjection.all }
+    var deletedNotes: [JSONValue] { noteProjection.deleted }
     var connections: [JSONValue] { snapshot["connections"].items.filter { !$0["deleted"].flag } }
-    var sessions: [JSONValue] {
-        snapshot["sessions"].items.filter { !$0["deleted"].flag && !$0["purged"].flag && $0["source"].text == "memory_operations_v1" }.sorted {
-            let first = MioFormat.timestamp($0["opened_at"]) ?? .distantPast
-            let second = MioFormat.timestamp($1["opened_at"]) ?? .distantPast
-            return first == second ? $0.id < $1.id : first > second
-        }
-    }
+    var sessions: [JSONValue] { sessionProjection.opened }
     var profiles: [JSONValue] { snapshot["profiles"].items }
     var links: [JSONValue] { snapshot["links"].items.filter { !$0["deleted"].flag } }
     var selectedSpaceValue: JSONValue { spaces.first { $0.id == selectedSpace } ?? .null }
@@ -128,23 +148,10 @@ import UniformTypeIdentifiers
         return allNotes.filter { visible.contains($0["space_id"].text) }.sorted { $0["updated_at"].text > $1["updated_at"].text }
     }
     var notesFilterActive: Bool { !notesFocusedSpaceIDs.isEmpty }
-    func notesOpacity(_ note: JSONValue) -> Double { notesFocusedSpaceIDs.isEmpty || expandedSpaces(notesFocusedSpaceIDs).contains(note["space_id"].text) ? 1 : 0.06 }
-    var notesInLiveSpaces: [JSONValue] {
-        let available = Set(spaces.map(\.id))
-        return allNotes.filter { available.contains($0["space_id"].text) }
-    }
-    var notesForDisplay: [JSONValue] {
-        let focus=expandedSpaces(notesFocusedSpaceIDs),unfiltered=notesFocusedSpaceIDs.isEmpty
-        return notesInLiveSpaces.sorted {
-            let a = unfiltered || focus.contains($0["space_id"].text), b = unfiltered || focus.contains($1["space_id"].text)
-            if a != b { return a }
-            return $0["updated_at"] == $1["updated_at"] ? $0.id < $1.id : $0["updated_at"].text > $1["updated_at"].text
-        }
-    }
-    var emphasizedNoteCount: Int {
-        let focus=expandedSpaces(notesFocusedSpaceIDs)
-        return notesFocusedSpaceIDs.isEmpty ? notesInLiveSpaces.count:notesInLiveSpaces.filter{focus.contains($0["space_id"].text)}.count
-    }
+    func notesOpacity(_ note: JSONValue) -> Double { notesFocusedSpaceIDs.isEmpty || noteProjection.focus.contains(note["space_id"].text) ? 1:0.06 }
+    var notesInLiveSpaces: [JSONValue] { noteProjection.live }
+    var notesForDisplay: [JSONValue] { noteProjection.display }
+    var emphasizedNoteCount: Int { noteProjection.emphasized }
     func setNotesSpaceSelected(_ id: String, selected: Bool) {
         if selected { notesFocusedSpaceIDs.insert(id) } else { notesFocusedSpaceIDs.remove(id) }
     }
@@ -157,12 +164,19 @@ import UniformTypeIdentifiers
             notesSidebarSpaceID = selectedSpace
         } else { notesFocusedSpaceIDs.formIntersection(available) }
     }
-    var visibleSessions: [JSONValue] { sessions.filter { visibleSpaceIDs.contains($0["space_id"].text) || !visibleSpaceIDs.isDisjoint(with: Set($0["target_space_ids"].items.map(\.text))) }.sorted { $0["updated_at"].text > $1["updated_at"].text } }
+    var visibleSessions: [JSONValue] {
+        let ids=visibleSpaceIDs
+        return sessionProjection.active.filter { ids.contains($0["space_id"].text) || !ids.isDisjoint(with:Set($0["target_space_ids"].items.map(\.text))) }
+    }
     func sessionName(_ session: JSONValue) -> String { profiles.first { $0.id == session["actor"].text }?["name"].text ?? l("Подключение агента") }
     func spaceName(_ id: String) -> String { spaces.first { $0.id == id }?["name"].text ?? l("Пространство") }
     func execute(_ method: String, _ params: [String: JSONValue] = [:]) async throws -> JSONValue {
         guard let store else { throw NSError(domain: "Mio", code: 1, userInfo: [NSLocalizedDescriptionKey: "Хранилище недоступно"]) }
-        return try await Task.detached(priority: .userInitiated) { try store.execute(method, params: params) }.value
+        let work=Task.detached(priority:.userInitiated) { try Task.checkCancellation();return try store.execute(method,params:params) }
+        // View lifecycle tasks also call read/history and historically finish
+        // their bounded read. Only superseded searches propagate cancellation.
+        guard method == "search" else { return try await work.value }
+        return try await withTaskCancellationHandler(operation:{ try await work.value },onCancel:{ work.cancel() })
     }
     func refresh() async {
         guard let store else { return }
@@ -172,12 +186,30 @@ import UniformTypeIdentifiers
         do {
             let token = try await Task.detached { try store.currentChangeToken() }.value
             guard generation == refreshGeneration, token != snapshotChangeToken else { return }
-            let next = try await execute("snapshot", ["projection": .string("compact")])
+            let previousTokens=workspaceTokens
+            let delta=try await Task.detached { try store.workspaceSnapshot(since:previousTokens) }.value
             guard generation == refreshGeneration else { return }
             // Cache the token observed before the snapshot, so a concurrent
             // later commit remains detectable on the next refresh.
-            snapshotChangeToken = token
-            guard next != snapshot else { return }
+            let nextTokens=delta["workspace_tokens"].fields.mapValues(\.text)
+            var fields=snapshot.fields
+            for (key,value) in delta.fields where key != "workspace_tokens" && key != "counts" { fields[key]=value }
+            if delta["counts"] != .null { fields["counts"] = .object(snapshot["counts"].fields.merging(delta["counts"].fields,uniquingKeysWith:{_,new in new})) }
+            let next=JSONValue.object(fields)
+            guard next != snapshot else { snapshotChangeToken=token;workspaceTokens=nextTokens;return }
+            let previousProjection=sessionProjection
+            let previousNotes=noteProjection,focus=notesFocusedSpaceIDs
+            let pickerContext=sessionPickerContext
+            let prepared=await Task.detached {
+                var sessions=previousProjection,notes=previousNotes
+                sessions.update(next["sessions"].items)
+                sessions.preparePickerLabels(profiles:next["profiles"].items,context:pickerContext)
+                notes.update(notes:next["notes"].items,spaces:next["spaces"].items,selected:focus)
+                return (sessions,notes)
+            }.value
+            guard generation == refreshGeneration else { return }
+            snapshotChangeToken=token;workspaceTokens=nextTokens
+            sessionProjection=prepared.0;noteProjection=prepared.1
             let searchableChanged=next["notes"] != snapshot["notes"] || next["events"] != snapshot["events"] || next["spaces"] != snapshot["spaces"] || next["connections"] != snapshot["connections"]
             snapshot = next
             graph.updateSpaceHierarchy(spaces)
@@ -287,7 +319,7 @@ import UniformTypeIdentifiers
             preferences.save(); await refresh(); notice = "Сохранённая история очищена"
         } catch { failure = error.localizedDescription }
     }
-    func shutdown() { graph.shutdown(); loop?.cancel(); searchTask?.cancel(); modelDownloadTask?.cancel(); indexer?.stop(); noteLoadGeneration += 1; cloudGeneration += 1; server?.stop(); server = nil; cloud = nil }
+    func shutdown() { graph.shutdown(); loop?.cancel(); cloudLoop?.cancel(); searchTask?.cancel(); modelDownloadTask?.cancel(); indexer?.stop(); noteLoadGeneration += 1; cloudGeneration += 1; server?.stop(); server = nil; cloud = nil }
     func refreshIndexing() async {
         guard let indexer else { return }
         if let status = try? await Task.detached(operation: { try indexer.status() }).value {
@@ -367,14 +399,15 @@ import UniformTypeIdentifiers
         if FileManager.default.fileExists(atPath: candidate.path) { panel.directoryURL = candidate }
         guard panel.runModal() == .OK, let url = panel.url else { return }
         guard let store else { return }
+        cloudRetry.reset()
         cloudGeneration += 1
         let generation = cloudGeneration
         cloud = nil
         do {
-            let connection = try await Task.detached { try CloudSyncCoordinator.reconnect(store: store, directory: url) }.value
+            let (connection,status) = try await Task.detached { let connection=try CloudSyncCoordinator.reconnect(store:store,directory:url);return (connection,connection.status()) }.value
             guard generation == cloudGeneration else { return }
             preferences.cloudFolder = url.path; preferences.save()
-            cloud = connection; cloudStatus = connection.status()
+            cloud = connection; cloudStatus = status
             await synchronizeCloud()
         } catch {
             guard generation == cloudGeneration else { return }
@@ -382,6 +415,7 @@ import UniformTypeIdentifiers
         }
     }
     func reconnectCloud() async {
+        cloudRetry.reset()
         cloudGeneration += 1
         let generation=cloudGeneration
         cloud = nil
@@ -394,22 +428,26 @@ import UniformTypeIdentifiers
         } catch { if generation==cloudGeneration { cloudStatus = .object(["state": .string("error"), "error": .string(error.localizedDescription)]) } }
     }
     func disconnectCloud() {
+        cloudRetry.reset()
         cloudGeneration += 1; cloud = nil
         preferences.cloudFolder = ""; preferences.save()
         cloudStatus = .object(["state": .string("disconnected")])
         notice = "Синхронизация отключена · локальная память сохранена"
     }
-    func synchronizeCloud() async {
+    func synchronizeCloud(automatic:Bool = false) async {
         guard let cloud, !cloudRunning else { return }
+        guard !automatic || cloudRetry.allowsAttempt(at:Date()) else { return }
         let generation = cloudGeneration
         cloudRunning = true; defer { cloudRunning = false }
         do {
             let status = try await Task.detached { try cloud.sync() }.value
             guard generation == cloudGeneration else { return }
+            cloudRetry.record(success:true,at:Date())
             if cloudStatus != status { cloudStatus = status }; await refresh()
         } catch {
             let status=await Task.detached { cloud.status() }.value
             guard generation == cloudGeneration else { return }
+            cloudRetry.record(success:false,at:Date())
             if cloudStatus != status { cloudStatus = status }
         }
     }

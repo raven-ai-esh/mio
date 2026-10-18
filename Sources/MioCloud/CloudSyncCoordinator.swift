@@ -102,8 +102,8 @@ public final class CloudSyncCoordinator: @unchecked Sendable {
             lastStatus = .object(["state": .string("error"), "code": .string((error as? MioError)?.code ?? "icloud_io_error"), "message": .string(error.localizedDescription), "transport": .string("iCloud Drive"), "cross_device_verified": .bool(false)])
         }
         var value = lastStatus.objectValue
-        let pending = try? store.execute("sync.pending")
-        let records = (try? store.execute("replica.export"))?["records"].arrayValue ?? []
+        let pending = try? store.execute("sync.status")
+        let records = (try? store.execute("sync.inventory"))?["records"].arrayValue ?? []
         let confirmed = records.filter { confirmedReceipts[$0["id"].stringValue ?? ""] == $0["content_hash"].stringValue }.count
         let verified = !records.isEmpty && confirmed == records.count && pending?["count"].intValue == 0 && pending?["pending_dependencies"].intValue == 0
         value["pending_records"] = pending?["count"] ?? .null
@@ -143,17 +143,18 @@ public final class CloudSyncCoordinator: @unchecked Sendable {
             var conflictedNames = Set<String>()
             var remote: [JSONValue] = [], total = 0
             for url in urls {
-                try checkBinding()
                 let info = try url.resourceValues(forKeys: [.isSymbolicLinkKey])
                 guard info.isSymbolicLink != true else { throw MioError("cloud_invalid_record", "A sync record cannot be a symbolic link.") }
                 let provider = try environment.metadata(url)
                 if provider.unresolvedConflicts { conflictedNames.insert(url.lastPathComponent) }
                 if !provider.unresolvedConflicts, let generation = try recordGeneration(url), let old = nextGenerations[url.lastPathComponent], generation.matches(old), let receipt = nextReceipts[url.lastPathComponent] {
-                    let currentProvider = try environment.metadata(url)
-                    if hasDeliveryProof(currentProvider) { verifiedHashes[receipt.id] = receipt.hash }
-                    else { requiresReceipt.insert(url.lastPathComponent) }
-                    continue
+                    if let after=try recordGeneration(url),after.matches(generation) {
+                        if hasDeliveryProof(provider) { verifiedHashes[receipt.id] = receipt.hash }
+                        else { requiresReceipt.insert(url.lastPathComponent) }
+                        continue
+                    }
                 }
+                try checkBinding()
                 try environment.requestDownload(url)
                 let data = try coordinatedRead(at: url)
                 guard data.count <= maximumRecordBytes else { throw MioError("cloud_limit", "A sync record exceeds the supported size.") }
@@ -184,9 +185,9 @@ public final class CloudSyncCoordinator: @unchecked Sendable {
             importedGenerations = nextGenerations
             importedReceipts = nextReceipts
             try checkBinding()
-            let document = try store.execute("replica.export")
+            let document = try store.execute("sync.inventory")
             let allRecords = document["records"].arrayValue
-            let pendingBefore = try store.execute("sync.pending")
+            let pendingBefore = try store.execute("sync.status",params:["include_ids":.bool(true)])
             let pendingIDs = Set(pendingBefore["record_ids"].arrayValue.compactMap(\.stringValue))
             let records = try allRecords.filter { record in
                 if pendingIDs.contains(record["id"].stringValue ?? "") { return true }
@@ -261,10 +262,10 @@ public final class CloudSyncCoordinator: @unchecked Sendable {
             try checkBinding()
             // Exact ID+hash acknowledgement cannot clear a newer redaction or edit.
             if !uploaded.isEmpty { _ = try store.execute("sync.ack", params: ["records": .array(uploaded)]) }
-            let pendingState = try store.execute("sync.pending")
+            let pendingState = try store.execute("sync.status")
             let pending = pendingState["count"], dependencies = pendingState["pending_dependencies"]
             confirmedReceipts = verifiedHashes
-            let currentRecords = try store.execute("replica.export")["records"].arrayValue
+            let currentRecords = try store.execute("sync.inventory")["records"].arrayValue
             let confirmed = currentRecords.filter { verifiedHashes[$0["id"].stringValue ?? ""] == $0["content_hash"].stringValue }.count
             let verified = !currentRecords.isEmpty && confirmed == currentRecords.count && pending.intValue == 0 && dependencies.intValue == 0 && unstable == 0
             if let error = deliveryErrors.first {

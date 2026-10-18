@@ -2,6 +2,9 @@ import Foundation
 import CSQLite
 
 final class SQLite {
+    // Lightweight per-connection counters for bounded-query regression checks.
+    private(set) var statementCount = 0
+    private(set) var returnedRowCount = 0
     private var handle: OpaquePointer?
     private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
     init(path: String) throws {
@@ -15,6 +18,7 @@ final class SQLite {
     deinit { sqlite3_close_v2(handle) }
     func exec(_ sql: String, _ bindings: [String] = []) throws { _ = try rows(sql, bindings) }
     func rows(_ sql: String, _ bindings: [String] = []) throws -> [[String: String]] {
+        statementCount += 1
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK else { throw failure() }
         defer { sqlite3_finalize(statement) }
@@ -24,6 +28,7 @@ final class SQLite {
             let code = sqlite3_step(statement)
             if code == SQLITE_DONE { return result }
             guard code == SQLITE_ROW else { throw failure() }
+            returnedRowCount += 1
             var row: [String: String] = [:]
             for i in 0..<sqlite3_column_count(statement) {
                 let key = String(cString: sqlite3_column_name(statement, i))

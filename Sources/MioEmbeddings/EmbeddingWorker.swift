@@ -58,6 +58,7 @@ public final class MioEmbeddingWorker: @unchecked Sendable {
     }
     public func encode(task: String, texts: [String] = [], title: String = "", image: URL? = nil) throws -> [[Float]] {
         lock.lock(); defer { lock.unlock() }
+        try Task.checkCancellation()
         guard !stopped else { throw MioError("embedding_stopped","Local model service is stopped") }
         do {
             try start()

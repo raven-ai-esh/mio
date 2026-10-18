@@ -16,7 +16,7 @@ enum MioPaths {
     static var executable: URL { URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL }
     static var modelDirectory: URL {
         if let path = ProcessInfo.processInfo.environment["MIO_MODEL_DIRECTORY"], !path.isEmpty { return URL(fileURLWithPath: path, isDirectory: true) }
-        if ProcessInfo.processInfo.environment["MIO_DATA_DIRECTORY"] != nil { return directory.appendingPathComponent("Models/embeddinggemma2-q8-v1", isDirectory: true) }
+        if ProcessInfo.processInfo.environment["MIO_DATA_DIRECTORY"] != nil || Bundle.main.bundleIdentifier == "app.mio.memory.acceptance" { return directory.appendingPathComponent("Models/embeddinggemma2-q8-v1", isDirectory: true) }
         return FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("app.mio.memory/models/embeddinggemma2-q8-v1", isDirectory: true)
     }
     static var embeddingWorker: URL {

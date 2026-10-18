@@ -89,9 +89,17 @@ Choosing a parent highlights its descendants in Notes and the graph. Agent acces
 
 ### Smoother background work
 
-Mio 0.5.1 replaces repeated Swift record decoding with indexed SQLite reference checks and keeps iCloud connection/error-status work off the main thread. Unchanged background status no longer triggers redundant workspace updates.
+Mio 0.5.2 prepares note and session lists when their data changes, selects indexing work from an indexed queue, and loads history pages directly from SQLite. New MCP activity refreshes the affected workspace sections instead of reloading every note and graph edge. Search inference runs outside the database lock; access is checked again before returning evidence.
 
-On the same isolated release-build fixture — 64 notes with 70.8 KB bodies and 512 links — median queue-check time fell from **87.7 ms to 5.9 ms**. A concurrent owner read waited **9.4 ms instead of 85.8 ms**. These measurements cover this storage bottleneck, not an overall app-speed or iCloud-delivery guarantee.
+| Isolated operation | Before | 0.5.2 |
+| --- | ---: | ---: |
+| Access the prepared visible list of 1,000 sessions | 3,988 ms | 0.04 ms |
+| Check an idle index queue with 3,200 notes | 165 ms | 0.023 ms |
+| Load 5,000 history events through 100-event pages | 4,857 ms | 155 ms |
+
+These are warm, synthetic release-build measurements on one Mac. The session measurement covers access to an already-prepared collection, rather than initial preparation or drawing a complete window. See [performance scope and verification](docs/PERFORMANCE.md).
+
+Cloud work uses a canonical hash inventory instead of repeatedly exporting full history payloads. Provider errors back off, and a long sync pass does not stall the interface refresh loop. Account checks and exact-hash upload proofs remain in place; FileProvider metadata is still reconciled. These changes do not establish physical cross-device delivery.
 
 ### Your first workspace
 

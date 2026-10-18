@@ -99,12 +99,20 @@ extension MioStore {
             return .object(d)
         }
         var d = item.objectValue
-        let events = try eventItems(id).filter { isVisible($0,s) && (s.human || s.readable.contains($0["space_id"].stringValue ?? "")) }
-        d["event_count"] = .number(Double(events.count))
+        let (visibility,visibleBindings)=eventVisibilitySQL(s)
+        var condition="kind='event' AND json_extract(json,'$.session_id')=? AND "+visibility,bindings=[id]+visibleBindings
+        if !s.human {
+            let spaces=s.readable.sorted()
+            condition += " AND json_extract(json,'$.space_id') IN ("+Array(repeating:"?",count:spaces.count).joined(separator:",")+")"
+            bindings += spaces
+        }
+        let count=Int(try db.rows("SELECT count(*) AS n FROM entities WHERE "+condition,bindings).first?["n"] ?? "0") ?? 0
+        d["event_count"] = .number(Double(count))
         if item["source"].stringValue == Self.interactionSource { d["interactions"] = .array(try visibleInteractions(s,sessionID:id)) }
         let offset = max(0,p["offset"]?.intValue ?? 0), limit = max(1,min(500,p["limit"]?.intValue ?? 200))
         var projections = [String:JSONValue]()
-        let page = Array(events.dropFirst(offset).prefix(limit)).map { event -> JSONValue in
+        let events=try db.rows("SELECT json FROM entities WHERE "+condition+" ORDER BY json_extract(json,'$.timestamp'),json_extract(json,'$.source_sequence'),json_extract(json,'$.source_id'),id LIMIT ? OFFSET ?",bindings+[String(limit),String(offset)]).map { try decode($0["json"]!) }
+        let page = events.map { event -> JSONValue in
             guard isMemoryInteractionEvent(event), let callID = event["interaction_id"].stringValue else { return event }
             let call = projections[callID] ?? (try? entity("interaction",callID)) ?? .null
             projections[callID] = call
@@ -123,7 +131,7 @@ extension MioStore {
         }
         d["events"] = .array(bounded)
         d["page_limited_by_bytes"] = .bool(bounded.count < page.count)
-        d["next_offset"] = offset + bounded.count < events.count ? .number(Double(offset + bounded.count)) : .null
+        d["next_offset"] = offset + bounded.count < count ? .number(Double(offset + bounded.count)) : .null
         return .object(d)
     }
 }

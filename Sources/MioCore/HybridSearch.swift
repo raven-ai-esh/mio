@@ -2,7 +2,7 @@ import Foundation
 import Accelerate
 
 extension MioStore {
-    func search(_ p: [String:JSONValue], _ scope: Scope) throws -> JSONValue {
+    func search(_ p: [String:JSONValue], _ scope: Scope, semantic:Result<MioSemanticQuery,MioError>? = nil) throws -> JSONValue {
         let requestedScope=p.string("scope","all")
         guard ["all","notes","history","files"].contains(requestedScope) else { throw MioError("invalid_params","Search scope must be all, notes, files or history") }
         var legacyParams=p;legacyParams["scope"] = .string(requestedScope)
@@ -64,9 +64,12 @@ extension MioStore {
         for row in lexical { if let source=documents[row["id"]!],lexicalCandidate((source["title"].stringValue ?? "")+" "+(source["text"].stringValue ?? ""),words:words) { fragmentKeywords.append(fragmentResult(source,words:words));if fragmentKeywords.count==100 { break } } }
         keyword=fragmentKeywords+keyword
         var semanticState="model_missing",semanticError="",activeModel="",dense:[JSONValue]=[]
-        if let encoder=semanticQueryEncoder,retrievalMode != .bm25 {
+        if (semantic != nil || semanticQueryEncoder != nil),retrievalMode != .bm25 {
             do {
-                let encoded=try encoder(query)
+                let encoded: MioSemanticQuery
+                if let semantic { encoded=try semantic.get() }
+                else if let encoder=semanticQueryEncoder { encoded=try encoder(query) }
+                else { throw MioError("model_missing","The query encoder is unavailable") }
                 activeModel=encoded.modelID
                 guard encoded.values.count==768,encoded.values.allSatisfy(\.isFinite),abs(encoded.values.reduce(Float(0)){$0+$1*$1}-1)<0.02 else { throw MioError("invalid_embedding","Query embedding is not normalized768d") }
                 semanticState=models.values.contains(encoded.modelID) ? "ready":"index_pending"

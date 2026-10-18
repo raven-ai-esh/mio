@@ -35,11 +35,21 @@ Owner bulk move/status/delete validates the full selection before its transactio
 
 Database and record format 2 protect location projections from old readers. The app accepts format-1 archives/replicas, upgrades format-1 databases and retains their existing vectors. Older binaries must not open a format-2 database. Moves change current visibility, not owner-wide archives or material already delivered to another device.
 
+## Native workspace projections
+
+Local SQLite triggers maintain section generations for catalog, memory, history, activity and delivery queue changes. The native owner requests only changed sections; the scoped MCP snapshot remains compatible. Note/session display collections are prepared outside view evaluation, and a refresh acknowledges its tokens only when the resulting snapshot is accepted. MCP activity therefore does not reload unchanged note and link metadata.
+
+Indexing jobs are a local derived queue maintained with note projections. Indexed pending selection and SQL status aggregates replace repeated full-note scans. The initial queue migration validates compact metadata against existing signatures without discarding valid vectors. Revision/file changes, moves, restoration, model/extractor changes and retries retain their publication guards.
+
+Semantic query encoding runs outside the store lock and transaction. Current scope and source eligibility are checked afterwards. Queued cancelled work is rejected before worker encoding; an active response is drained to keep the shared pipe aligned.
+
 ## History
 
 Each MCP transport has its own memory session. The operation log records request start/end, results, durations and observed response delivery. The session is not a Codex conversation. New note reads record the exact page of links and neighbor versions returned to the agent.
 
 Historical replay distinguishes recorded evidence from the current background graph. Historical note revisions do not acquire current adjacency. Catalog references are displayed as space IDs, not as note-source buttons.
+
+Session pages apply visibility and stable ordering in SQLite before their offset/limit. Counts and byte-bounded cursors refer to the same eligible event sequence. The native session catalog batches owner aggregates instead of querying each session separately.
 
 ## Localization
 
@@ -65,3 +75,5 @@ Sibling order is optional `sort_order` metadata on ordinary space records. Legac
 ## Background queue checks
 
 `sync.pending` resolves missing record references through SQLite existence checks against indexed entity IDs. It does not deserialize all historical note/event bodies or read full note bodies for each graph edge. Validation and application still use `validateDocument` and `canApply`; unresolved references remain pending across restart and sparse replication. Initialization and error-status checks for iCloud run outside the main actor. Unchanged index and cloud status do not publish redundant workspace updates.
+
+Cloud status/sync use an owner-only canonical hash inventory, invalidated by record insert/update/delete triggers, instead of exporting complete history payloads every pass. Fresh FileProvider metadata and exact canonical hashes remain part of delivery proof. Unchanged files require fewer provider/binding checks; binding checks remain before data transfer and final acknowledgments. The cloud loop is independent of native refresh and backs off after errors. See [performance boundaries](PERFORMANCE.md).

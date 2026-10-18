@@ -314,16 +314,20 @@ extension MioStore {
         if scope.human { return ("1",[]) }
         guard !scope.readable.isEmpty else { return ("0",[]) }
         let marks = Array(repeating:"?",count:scope.readable.count).joined(separator:",")
-        let own="NOT EXISTS(SELECT 1 FROM json_each(\(json),'$.required_space_ids') visibility WHERE visibility.value NOT IN (\(marks)))"
-        let effective="(coalesce(json_extract(\(json),'$.kind'),'')<>'memory_operation' OR EXISTS(SELECT 1 FROM entities interaction_acl WHERE interaction_acl.kind='interaction' AND interaction_acl.id=json_extract(\(json),'$.interaction_id') AND json_extract(interaction_acl.json,'$.integrity_state')='valid' AND EXISTS(SELECT 1 FROM json_each(interaction_acl.json,'$.valid_event_ids') accepted_event WHERE accepted_event.value=json_extract(\(json),'$.id')) AND NOT EXISTS(SELECT 1 FROM json_each(interaction_acl.json,'$.required_space_ids') required WHERE required.value NOT IN (\(marks)))))"
-        return (own+" AND coalesce(json_extract(\(json),'$.integrity_state'),'valid')='valid' AND "+effective,scope.readable.sorted()+scope.readable.sorted())
+        func array(_ object:String,_ key:String) -> String { "CASE WHEN json_type(\(object),'$.\(key)')='array' THEN json_extract(\(object),'$.\(key)') ELSE '[]' END" }
+        func member(_ name:String) -> String { "CASE WHEN \(name).type='text' THEN \(name).value ELSE '' END" }
+        let own="NOT EXISTS(SELECT 1 FROM json_each(\(array(json,"required_space_ids"))) visibility WHERE (\(member("visibility"))) NOT IN (\(marks)))"
+        let memory="(coalesce(json_extract(\(json),'$.kind'),'')='memory_operation' OR coalesce(json_extract(\(json),'$.event_kind'),'')='memory_operation')"
+        let effective="(NOT \(memory) OR EXISTS(SELECT 1 FROM entities interaction_acl WHERE interaction_acl.kind='interaction' AND interaction_acl.id=json_extract(\(json),'$.interaction_id') AND json_extract(interaction_acl.json,'$.integrity_state')='valid' AND EXISTS(SELECT 1 FROM json_each(\(array("interaction_acl.json","valid_event_ids"))) accepted_event WHERE accepted_event.type='text' AND accepted_event.value=json_extract(\(json),'$.id')) AND NOT EXISTS(SELECT 1 FROM json_each(\(array("interaction_acl.json","required_space_ids"))) required WHERE (\(member("required"))) NOT IN (\(marks)))))"
+        let integrity="(coalesce(json_type(\(json),'$.integrity_state'),'null')<>'text' OR json_extract(\(json),'$.integrity_state')='valid')"
+        return (own+" AND "+integrity+" AND "+effective,scope.readable.sorted()+scope.readable.sorted())
     }
     func visibleInteractions(_ scope: Scope, sessionID: String? = nil, limit: Int = 200) throws -> [JSONValue] {
         let (visible,bindings) = eventVisibilitySQL(scope)
         var condition = "kind='interaction' AND " + visible, values = bindings
         if !scope.human { condition += " AND json_extract(json,'$.space_id') IN (" + Array(repeating:"?",count:scope.readable.count).joined(separator:",") + ")"; values += scope.readable.sorted() }
         if let sessionID { condition += " AND json_extract(json,'$.session_id')=?"; values.append(sessionID) }
-        return try db.rows("SELECT json FROM entities WHERE " + condition + " ORDER BY json_extract(json,'$.started_at') DESC LIMIT \(max(1,min(limit,500)))",values).map { row in
+        return try db.rows("SELECT json_remove(json,'$.issued_graph') AS json FROM entities WHERE " + condition + " ORDER BY json_extract(json,'$.started_at') DESC LIMIT \(max(1,min(limit,500)))",values).map { row in
             var value = try decode(row["json"]!).objectValue
             // Older derived rows may contain a complete issued page. Exact
             // pages live in immutable events, never in compact summary lists.

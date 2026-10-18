@@ -48,4 +48,29 @@ final class WorkerTests: XCTestCase {
         try Data("wrong".utf8).write(to:target)
         XCTAssertFalse(try manifest.valid(file,in:directory));XCTAssertThrowsError(try manifest.verify(in:directory))
     }
+    func testCancelledQueuedQueryDoesNotRunAndLatestQueryStillCompletes() async throws {
+        let log=directory.appendingPathComponent("encoded.txt")
+        let path=try helper("""
+        import json,sys,time
+        print(json.dumps({'state':'ready','model':'embeddinggemma2-q8-v1','dimensions':768}),flush=True)
+        for line in sys.stdin:
+            r=json.loads(line)
+            text=r['texts'][0]
+            with open(\(String(reflecting:log.path)),'a') as f: f.write(text+'\\n')
+            if text=='first': time.sleep(0.3)
+            print(json.dumps({'id':r['id'],'vectors':[[1]+[0]*767]}),flush=True)
+        """)
+        let worker=MioEmbeddingWorker(executable:path,modelDirectory:directory,timeout:2)
+        defer { worker.stop() }
+        let first=Task.detached { try worker.query("first") }
+        let deadline=Date().addingTimeInterval(2)
+        while !FileManager.default.fileExists(atPath:log.path),Date()<deadline { try await Task.sleep(for:.milliseconds(10)) }
+        XCTAssertTrue(FileManager.default.fileExists(atPath:log.path))
+        let obsolete=Task.detached { try worker.query("obsolete") }
+        obsolete.cancel()
+        _=try await first.value
+        do { _=try await obsolete.value;XCTFail("The obsolete request must not be encoded") } catch is CancellationError {} catch { XCTFail("Unexpected cancellation error: \(error)") }
+        XCTAssertEqual(try worker.query("latest").values[0],1)
+        XCTAssertEqual(try String(contentsOf:log,encoding:.utf8),"first\nlatest\n")
+    }
 }

@@ -29,6 +29,7 @@ public final class MioStore: @unchecked Sendable {
         try db.exec("CREATE TABLE IF NOT EXISTS entities(kind TEXT NOT NULL,id TEXT NOT NULL,json TEXT NOT NULL,PRIMARY KEY(kind,id))")
         try db.exec("CREATE INDEX IF NOT EXISTS entity_space ON entities(kind,json_extract(json,'$.space_id'))")
         try db.exec("CREATE INDEX IF NOT EXISTS entity_session ON entities(kind,json_extract(json,'$.session_id'))")
+        try db.exec("CREATE INDEX IF NOT EXISTS entity_session_page ON entities(kind,json_extract(json,'$.session_id'),json_extract(json,'$.timestamp'),json_extract(json,'$.source_sequence'),json_extract(json,'$.source_id'),id)")
         try db.exec("CREATE INDEX IF NOT EXISTS entity_state ON entities(kind,json_extract(json,'$.state'))")
         try db.exec("CREATE INDEX IF NOT EXISTS local_memory_sessions ON entities(kind,json_extract(json,'$.source'),json_extract(json,'$.session_state'),json_extract(json,'$.owner_device_id'))")
         try db.exec("CREATE INDEX IF NOT EXISTS entity_note ON entities(kind,json_extract(json,'$.note_id'))")
@@ -44,11 +45,15 @@ public final class MioStore: @unchecked Sendable {
         try ensureSearchMapping()
         try ensureSourceIndex()
         if previous == "1" { try upgradeSourceIndexLocationSignatures() }
+        try ensureSourceIndexQueue()
+        try ensureWorkspaceGenerations()
+        try ensureRecordInventory()
         try ensureInteractionProjection()
         try recoverMemoryInteractions()
     }
     public func execute(_ method: String, params: [String: JSONValue] = [:], context: AccessContext = .human) throws -> JSONValue {
         lock.lock(); defer { lock.unlock() }
+        try Task.checkCancellation()
         try recoverMemoryInteractions()
         var call: InteractionAttempt?
         let authenticatedAccess = try? scope(context)
@@ -81,13 +86,16 @@ public final class MioStore: @unchecked Sendable {
                 throw MioError("reply_unavailable","The original execution is recorded, but its reply is no longer retained; use a fresh request identifier")
             }
         }
-        activeInteractionID = call?.id
-        defer { activeInteractionID = nil }
         do {
-            let result = try perform(method,params:params,context:context,interaction:call)
+            let semantic=try prepareSearchEncoding(method,params,context)
+            try Task.checkCancellation()
+            activeInteractionID = call?.id
+            defer { activeInteractionID = nil }
+            let result = try perform(method,params:params,context:context,interaction:call,semantic:semantic)
             if let call { cacheInteractionReply(call.id,.success(result)) }
             return result
         } catch {
+            let error:Error = error is CancellationError ? MioError("cancelled","The memory request was cancelled"):error
             if let call, let access = authenticatedAccess, try entity("interaction",call.id)?["end_event_id"].stringValue == nil {
                 try db.transaction { try finishInteraction(call,scope:access,method:method,result:.null,errorCode:(error as? MioError)?.code ?? "operation_failed") }
             }
@@ -106,7 +114,7 @@ public final class MioStore: @unchecked Sendable {
         interactionReplies[id] = reply
         while interactionReplyOrder.count > 32 { interactionReplies.removeValue(forKey:interactionReplyOrder.removeFirst()) }
     }
-    func perform(_ method: String, params: [String: JSONValue], context: AccessContext, interaction: InteractionAttempt? = nil) throws -> JSONValue {
+    func perform(_ method: String, params: [String: JSONValue], context: AccessContext, interaction: InteractionAttempt? = nil, semantic:Result<MioSemanticQuery,MioError>? = nil) throws -> JSONValue {
         let result: JSONValue = try db.transaction {
             let access = try scope(context)
             try authorizeMethod(method, params, access)
@@ -124,7 +132,7 @@ public final class MioStore: @unchecked Sendable {
                 return replay
 
             }
-            var result = try dispatch(method, params, access)
+            var result = try dispatch(method, params, access,semantic:semantic)
             if isMutation(method) {
                 var values = result.objectValue
                 values["receipt"] = .object(["status": .string("local_committed"), "operation_id": .string(UUID().uuidString.lowercased()), "committed_at": .string(now()), "cloud_status": .string(["profile.create","profile.revoke","sync.ack","sync.queue","search.rebuild"].contains(method) ? "not_applicable" : "pending")])
@@ -133,7 +141,7 @@ public final class MioStore: @unchecked Sendable {
             if let interaction { result = responseWithTrace(result,call:interaction,replayed:false); try finishInteraction(interaction,scope:access,method:method,result:result,errorCode:result["_error"].stringValue) }
             if !idem.isEmpty { var cached = result.objectValue; if method == "profile.create" { cached.removeValue(forKey:"token") }; try db.exec("INSERT INTO idempotency VALUES(?,?,?)", [key, fingerprint, try encode(.object(cached))]) }
             let audit: JSONValue = .object(["id": .string(UUID().uuidString.lowercased()), "timestamp": .string(now()), "actor": .string(access.actor), "device_id":.string(deviceID), "method": .string(method), "request":auditRequest(params), "result_refs":auditRefs(result), "space_ids": .array(access.readable.sorted().map(JSONValue.string)), "result_ids": resultIDs(result), "outcome": .string(result["_error"].stringValue == nil ? "success" : "conflict")])
-            if !["snapshot","diagnostics","replica.export","replica.record","replica.merge","sync.pending","sync.ack","sync.queue"].contains(method) { try db.exec("INSERT INTO audit VALUES(?,?)", [audit["id"].stringValue!, try encode(audit)]) }
+            if !["snapshot","diagnostics","replica.export","replica.record","replica.merge","sync.pending","sync.status","sync.inventory","sync.ack","sync.queue"].contains(method) { try db.exec("INSERT INTO audit VALUES(?,?)", [audit["id"].stringValue!, try encode(audit)]) }
             return result
         }
         if let error = result["_error"].stringValue { throw MioError(error, "The note changed. Your submitted draft was preserved as a conflicting version.", details: result) }
@@ -188,14 +196,14 @@ public final class MioStore: @unchecked Sendable {
         if method.hasPrefix("note.") && method != "note.create" { _ = try requireEntity("note", p.required("note_id"), s, write: method != "note.history", allowDeleted: ["note.history", "note.restore"].contains(method)) }
         if method == "note.create" { try requireSpace(p.required("space_id"), s, write: true) }
     }
-    func isMutation(_ method: String) -> Bool { !["snapshot", "search", "read", "note.history", "replica.export", "replica.record", "sync.pending", "archive.export", "markdown.export", "diagnostics"].contains(method) }
+    func isMutation(_ method: String) -> Bool { !["snapshot", "search", "read", "note.history", "replica.export", "replica.record", "sync.pending", "sync.status", "sync.inventory", "archive.export", "markdown.export", "diagnostics"].contains(method) }
     func now() -> String { let f = ISO8601DateFormatter(); f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]; return f.string(from: Date()) }
     func hash(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
     func encode(_ v: JSONValue) throws -> String { String(decoding: try v.encoded(), as: UTF8.self) }
     func decode(_ text: String) throws -> JSONValue { try JSONValue.decode(Data(text.utf8)) }
     func entity(_ kind: String, _ id: String) throws -> JSONValue? { try db.rows("SELECT json FROM entities WHERE kind=? AND id=?", [kind, id]).first.map { try decode($0["json"]!) } }
     func all(_ kind: String) throws -> [JSONValue] { try db.rows("SELECT json FROM entities WHERE kind=? ORDER BY id", [kind]).map { try decode($0["json"]!) } }
-    func put(_ kind: String, _ value: JSONValue) throws { try db.exec("INSERT OR REPLACE INTO entities VALUES(?,?,?)", [kind, value["id"].stringValue!, try encode(value)]) }
+    func put(_ kind: String, _ value: JSONValue) throws { try db.exec("INSERT INTO entities VALUES(?,?,?) ON CONFLICT(kind,id) DO UPDATE SET json=excluded.json WHERE entities.json IS NOT excluded.json", [kind, value["id"].stringValue!, try encode(value)]) }
     func record(_ kind: String, entityID: String, data: JSONValue) throws -> JSONValue {
         let r: JSONValue = .object(["id": .string(UUID().uuidString.lowercased()), "kind": .string(kind), "entity_id": .string(entityID), "data": data, "timestamp": .string(now()), "device_id": .string(deviceID)])
         try insertRecord(r, pending: true)

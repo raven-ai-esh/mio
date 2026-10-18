@@ -13,7 +13,7 @@ extension MioStore {
         }
     }
     func compactSnapshotEvents(_ scope: Scope) throws -> [JSONValue] {
-        let expression = "json_set(json_remove(json,'$.text'),'$.text_preview',coalesce(substr(json_extract(json,'$.text'),1,240),''),'$.text_omitted',json('true'))"
+        let expression = "json_set(json_remove(json,'$.text','$.request','$.issued_graph','$.result_refs','$.receipt','$.required_space_ids','$.target_space_ids'),'$.text_preview',coalesce(substr(json_extract(json,'$.text'),1,240),''),'$.text_omitted',json('true'))"
         let allowed: Set<String> = ["id","session_id","space_id","kind","role","timestamp","tool_name","outcome","source_id","source_sequence","generation","text_preview","text_omitted","interaction_id","phase","method","started_at","finished_at","duration_ms","outcome","replayed","delivery_state","observation_type","observed_at"]
         let (condition,bindings) = snapshotScope(scope,kind:"event",excludeDeleted:false)
         return try db.rows("SELECT " + expression + " AS json FROM entities WHERE " + condition + " ORDER BY json_extract(json,'$.timestamp') DESC LIMIT 200",bindings).map { .object(try decodeProjected($0["json"]!).objectValue.filter { allowed.contains($0.key) }) }
