@@ -24,7 +24,9 @@ extension MioStore {
             "(r.kind='link' AND (\(missing("note",ref("from_note_id"))) OR \(missing("note",ref("to_note_id")))))",
             "(r.kind='connection' AND (\(missing("space",ref("from_space_id"))) OR \(missing("space",ref("to_space_id")))))"
         ]
-        return Int(try db.rows("SELECT count(*) AS n FROM records r WHERE "+clauses.joined(separator:" OR ")).first?["n"] ?? "0") ?? 0
+        let missing=Int(try db.rows("SELECT count(*) AS n FROM records r WHERE "+clauses.joined(separator:" OR ")).first?["n"] ?? "0") ?? 0
+        let unapplied=Int(try db.rows("SELECT count(*) AS n FROM pending_record_applications").first?["n"] ?? "0") ?? 0
+        return max(missing,unapplied)
     }
     func canApply(_ r: JSONValue) throws -> Bool {
         let kind = r["kind"].stringValue ?? "", data = r["data"]
@@ -64,16 +66,30 @@ extension MioStore {
         if kind == "connection" { return try entity("space",data["from_space_id"].stringValue ?? "") != nil && entity("space",data["to_space_id"].stringValue ?? "") != nil }
         return true
     }
-    func applyAvailableRecords() throws {
-        let records = try db.rows("SELECT json FROM records ORDER BY rowid").map { try decode($0["json"]!) }
-        var remaining = records, previous = remaining.count + 1
-        while !remaining.isEmpty && remaining.count < previous {
-            previous = remaining.count; var deferred: [JSONValue] = []
-            for record in remaining {
-                if try canApply(record) { try apply(record) }
-                else { deferred.append(record) }
+    func applyAvailableRecords(rejectInvalid:Bool = true) throws {
+        while true {
+            let records=try db.rows("SELECT r.id FROM pending_record_applications p JOIN records r ON r.id=p.record_id ORDER BY CASE r.kind WHEN 'note.redact' THEN 0 WHEN 'session.purge' THEN 0 ELSE 1 END,r.rowid")
+            var applied=false
+            for row in records {
+                // An earlier purge/redaction may have sanitized this payload in
+                // the same transaction. Never apply a pre-purge JSON snapshot.
+                guard let json=try db.rows("SELECT json FROM records WHERE id=?",[row["id"]!]).first?["json"] else { continue }
+                let original=try decode(json),record=try redacted(original)
+                if record != original {
+                    try db.exec("UPDATE records SET json=? WHERE id=?",[try encode(record),row["id"]!])
+                    try db.exec("INSERT OR IGNORE INTO outbox VALUES(?)",[row["id"]!])
+                }
+                let available:Bool
+                do { available=try canApply(record) }
+                catch let error as MioError where !rejectInvalid && error.code == "invalid_replica" {
+                    // An untrusted deferred record must not prevent a local
+                    // dependency from committing or stop the owner reopening.
+                    // Keep it queued and counted; an explicit merge still fails.
+                    continue
+                }
+                if available { try apply(record);applied=true }
             }
-            remaining = deferred
+            if !applied { return }
         }
     }
 }

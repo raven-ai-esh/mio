@@ -49,6 +49,8 @@ public final class MioStore: @unchecked Sendable {
         try ensureWorkspaceGenerations()
         try ensureRecordInventory()
         try ensureInteractionProjection()
+        try ensureRecordApplications()
+        try db.transaction { try applyAvailableRecords(rejectInvalid:false) }
         try recoverMemoryInteractions()
     }
     public func execute(_ method: String, params: [String: JSONValue] = [:], context: AccessContext = .human) throws -> JSONValue {
@@ -207,6 +209,7 @@ public final class MioStore: @unchecked Sendable {
     func record(_ kind: String, entityID: String, data: JSONValue) throws -> JSONValue {
         let r: JSONValue = .object(["id": .string(UUID().uuidString.lowercased()), "kind": .string(kind), "entity_id": .string(entityID), "data": data, "timestamp": .string(now()), "device_id": .string(deviceID)])
         try insertRecord(r, pending: true)
+        try applyAvailableRecords(rejectInvalid:false)
         return r
     }
     func insertRecord(_ input: JSONValue, pending: Bool) throws {
@@ -247,6 +250,10 @@ public final class MioStore: @unchecked Sendable {
         return automaticTrace(.array(ids.map(JSONValue.string)))
     }
     func apply(_ r: JSONValue) throws {
+        try applyRecord(r)
+        try db.exec("DELETE FROM pending_record_applications WHERE record_id=?",[r["id"].stringValue!])
+    }
+    private func applyRecord(_ r: JSONValue) throws {
         let kind = r["kind"].stringValue!, id = r["entity_id"].stringValue!
         var d = r["data"].objectValue
         if kind == "revision" { try put("revision", .object(d)); try refreshNote(d["note_id"]!.stringValue!); return }
@@ -258,6 +265,7 @@ public final class MioStore: @unchecked Sendable {
         if kind == "event" {
             let sessionID = d["session_id"]!.stringValue!
             if try d["purged"]?.boolValue == true || isPurged(sessionID) { return }
+            if try entity("event",d["id"]!.stringValue!) == .object(d) { return }
             let wasNew = try entity("event",d["id"]!.stringValue!) == nil
             try put("event", .object(d)); try indexEvent(.object(d)); try projectInteraction(.object(d))
             if wasNew { try db.exec("UPDATE entities SET json=json_set(json,'$.event_count',coalesce(json_extract(json,'$.event_count'),0)+1) WHERE kind='session' AND id=?",[sessionID]) }

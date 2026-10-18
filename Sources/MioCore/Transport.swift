@@ -138,8 +138,6 @@ extension MioStore {
             guard let id = audit["id"].stringValue, audit["timestamp"].stringValue != nil, audit["method"].stringValue != nil else { throw MioError("archive_corrupt","Invalid audit event") }
             try db.exec("INSERT OR IGNORE INTO audit VALUES(?,?)",[id,try encode(audit)])
         }
-        for note in try all("note") { try refreshNote(note["id"].stringValue!) }
-        for session in try all("session") { try purgeProjection(session["id"].stringValue!); try refreshSession(session["id"].stringValue!) }
         return .object(["imported_records": .number(Double(inserted)),"total_records": .number(Double(records.count)),"profiles_active": .bool(false)])
     }
     func archiveExport(_ p: [String: JSONValue]) throws -> JSONValue {

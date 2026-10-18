@@ -52,6 +52,20 @@ final class CloudSyncTests: XCTestCase {
         XCTAssertFalse(receipt["delivery_verified"].boolValue)
         XCTAssertEqual(try recordFiles(folder).count, 0)
     }
+    func testColdReconnectDoesNotMergeAlreadyKnownCanonicalRecords() throws {
+        let (_,a,_,folder)=try setupStores(),env=FixtureCloudEnvironment()
+        let (_,id,_)=try createNote(a,body:"Retained fictional cloud evidence")
+        _=try CloudSyncCoordinator(store:a,directory:folder,environment:env).sync()
+        func mergeCount() throws -> Int { try a.execute("snapshot")["audit"].arrayValue.filter{$0["method"] == .string("replica.merge")}.count }
+        let before=try mergeCount()
+        // A new coordinator has no in-memory generation receipts. Exact local
+        // canonical hashes can skip domain replay; provider proof is still fresh.
+        let fresh=try CloudSyncCoordinator(store:a,directory:folder,environment:env).sync()
+        XCTAssertEqual(try mergeCount(),before)
+        XCTAssertEqual(fresh["downloaded_records"].intValue,0)
+        XCTAssertTrue(fresh["delivery_verified"].boolValue)
+        XCTAssertEqual(try a.execute("read",params:["id":.string(id)])["body"],.string("Retained fictional cloud evidence"))
+    }
     func testAlreadyAcknowledgedLocalCopiesRequireActualProviderUploadReceipt() throws {
         let (_, a, _, folder) = try setupStores(), env = FixtureCloudEnvironment()
         _ = try createNote(a)

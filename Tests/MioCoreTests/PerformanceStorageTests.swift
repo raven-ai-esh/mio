@@ -125,6 +125,19 @@ final class PerformanceStorageTests: XCTestCase {
         let profile=try store.execute("profile.create",params:["space_id":space,"name":.string("Restricted internal API")])
         for method in ["sync.inventory","sync.status"] { XCTAssertThrowsError(try store.execute(method,context:.agent(token:profile["token"].stringValue!))) }
     }
+    func testKnownReplicaDoesNotReapplyRetainedHistoryAndNotes() throws {
+        let space=try store.execute("space.create",params:["name":.string("Known replica")])["id"]
+        for i in 0..<32 { _=try store.execute("note.create",params:["space_id":space,"title":.string("Retained \(i)")]) }
+        let events=(0..<120).map { i -> JSONValue in .object(["source_id":.string("kept-\(i)"),"source_sequence":.number(Double(i)),"timestamp":.string("2026-10-18T10:00:00.000Z"),"role":.string("tool"),"text":.string("Retained event \(i)")]) }
+        _=try store.execute("history.import",params:["space_id":space,"source":.string("synthetic_fixture"),"external_id":.string("retained-history"),"events":.array(events)])
+        let exported=try store.execute("replica.export")
+        let known=try XCTUnwrap(exported["records"].arrayValue.first { $0["kind"] == .string("space") })
+        let before=store.db.statementCount
+        let merged=try store.execute("replica.merge",params:["document":.object(["schema_version":.number(2),"format":.string("mio-records"),"records":.array([known])])])
+        XCTAssertEqual(merged["imported_records"].intValue,0)
+        XCTAssertLessThan(store.db.statementCount-before,80,"One known cloud record must not replay the complete retained log or refresh every note/session")
+        XCTAssertEqual(try store.execute("snapshot")["notes"].arrayValue.count,32)
+    }
 }
 
 private final class SearchOutcome: @unchecked Sendable { var code="" }

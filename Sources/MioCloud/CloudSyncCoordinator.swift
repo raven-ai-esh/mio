@@ -141,6 +141,7 @@ public final class CloudSyncCoordinator: @unchecked Sendable {
             var verifiedHashes: [String: String] = [:]
             var requiresReceipt = Set<String>()
             var conflictedNames = Set<String>()
+            let localHashes=Dictionary(uniqueKeysWithValues:try store.execute("sync.inventory")["records"].arrayValue.map { ($0["id"].stringValue!,$0["content_hash"].stringValue!) })
             var remote: [JSONValue] = [], total = 0
             for url in urls {
                 let info = try url.resourceValues(forKeys: [.isSymbolicLinkKey])
@@ -161,7 +162,7 @@ public final class CloudSyncCoordinator: @unchecked Sendable {
                 total += data.count
                 guard total <= maximumTotalBytes else { throw MioError("cloud_limit", "The sync batch exceeds the supported size.") }
                 let record = try validatedRecord(data, filename: url.lastPathComponent)
-                remote.append(record)
+                if localHashes[record["id"].stringValue!] != record["content_hash"].stringValue! { remote.append(record) }
                 nextGenerations[url.lastPathComponent] = try recordGeneration(url)
                 let receipt = RecordReceipt(id: record["id"].stringValue!, hash: record["content_hash"].stringValue!)
                 nextReceipts[url.lastPathComponent] = receipt

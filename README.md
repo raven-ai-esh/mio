@@ -89,9 +89,9 @@ Choosing a parent highlights its descendants in Notes and the graph. Agent acces
 
 ### Smoother background work
 
-Mio 0.5.2 prepares note and session lists when their data changes, selects indexing work from an indexed queue, and loads history pages directly from SQLite. New MCP activity refreshes the affected workspace sections instead of reloading every note and graph edge. Search inference runs outside the database lock; access is checked again before returning evidence.
+Mio 0.5.3 prepares note and session lists when their data changes, selects indexing work from an indexed queue, and loads history pages directly from SQLite. New MCP activity refreshes the affected workspace sections instead of reloading every note and graph edge. Search inference runs outside the database lock; access is checked again before returning evidence.
 
-| Isolated operation | Before | 0.5.2 |
+| Isolated operation | Before | Optimized path |
 | --- | ---: | ---: |
 | Access the prepared visible list of 1,000 sessions | 3,988 ms | 0.04 ms |
 | Check an idle index queue with 3,200 notes | 165 ms | 0.023 ms |
@@ -99,7 +99,7 @@ Mio 0.5.2 prepares note and session lists when their data changes, selects index
 
 These are warm, synthetic release-build measurements on one Mac. The session measurement covers access to an already-prepared collection, rather than initial preparation or drawing a complete window. See [performance scope and verification](docs/PERFORMANCE.md).
 
-Cloud work uses a canonical hash inventory instead of repeatedly exporting full history payloads. Provider errors back off, and a long sync pass does not stall the interface refresh loop. Account checks and exact-hash upload proofs remain in place; FileProvider metadata is still reconciled. These changes do not establish physical cross-device delivery.
+Cloud work uses a canonical hash inventory instead of repeatedly exporting full history payloads. A cold reconnect skips records already known by their exact canonical hash. An incoming batch applies only new or still-dependent records, with a persistent application queue; it does not replay all retained history or refresh every note. Provider errors back off, and sync scheduling is independent of interface refresh. Account checks and exact-hash upload proofs remain in place; FileProvider metadata is still reconciled. These changes do not establish physical cross-device delivery.
 
 ### Your first workspace
 

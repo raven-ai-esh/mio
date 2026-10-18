@@ -1,4 +1,4 @@
-# Performance in 0.5.2
+# Performance in 0.5.3
 
 The changes address repeated work as notes, recorded connections and operation history grow. SQLite remains the source of truth; the public agent interface still has five MCP tools.
 
@@ -9,7 +9,7 @@ The changes address repeated work as notes, recorded connections and operation h
 - **Database-side history pages.** Access visibility, count, order, limit and offset are applied in SQLite. A page does not materialize the complete session. Existing cursor and byte bounds remain; historical replay still uses recorded source versions and issued link pages.
 - **Separate inference and storage.** Query encoding happens outside the shared store lock and outside a database transaction. The result is used only after current authorization is checked. Cancelled queued requests do not start obsolete model work. An already-running worker response is allowed to finish so its shared pipe stays synchronized.
 - **Section updates.** Local generation counters identify changed catalog, memory, history, activity and queue sections. MCP activity does not reload note/link metadata. Native list projections are prepared before publishing the corresponding snapshot. A generation is acknowledged only when that snapshot is accepted.
-- **Smaller cloud work.** A derived, invalidated-on-write hash inventory preserves the canonical record hashes used by export and upload acknowledgments. Unchanged record payloads are not repeatedly decoded and hashed for cloud status. FileProvider metadata and account/folder checks remain authoritative. Cloud scheduling is independent of interface refresh and retries back off to a maximum five-minute delay; manual retries remain available.
+- **Smaller cloud work.** A derived, invalidated-on-write hash inventory preserves the canonical record hashes used by export and upload acknowledgments. Unchanged record payloads are not repeatedly decoded and hashed for cloud status. Cold reconnects skip domain replay for exact known hashes. A persistent application queue retries only new or dependent records; SQLite triggers also capture writes from an older application. Successful projection and queue removal commit together. Payloads are canonicalized again before applying queued work, so a prior purge cannot be undone by a stale batch snapshot. Merge updates affected projections instead of refreshing all notes and sessions. FileProvider metadata and account/folder checks remain authoritative. Cloud scheduling is independent of interface refresh and retries back off to a maximum five-minute delay; manual retries remain available.
 
 ## Measurements
 
@@ -47,7 +47,7 @@ swift test --filter WorkerTests
 swift test --filter CloudSyncTests
 ```
 
-The regression suite checks bounded idle-query work and page materialization, timezone-aware ordering, typed history visibility before pagination, source-index restart/extractor/retry behavior, workspace deltas, revocation during inference, cancelled worker requests, canonical hash invalidation after redaction and internal-route access restrictions.
+The regression suite checks bounded idle-query work and page materialization, timezone-aware ordering, typed history visibility before pagination, source-index restart/extractor/retry behavior, workspace deltas, revocation during inference, cancelled worker requests, canonical hash invalidation after redaction and internal-route access restrictions. A known-record merge first reproduced 1,509 SQL statements on a fixture with 32 notes and 120 events; its regression now requires fewer than 80. Application-queue checks cover legacy projection recovery and tombstones, older-writer triggers, local dependency arrival, restart, rollback and purge-before-revision ordering. A cold local-filesystem reconnect verifies that already-known records do not create a replica merge, while current provider delivery proof is still required.
 
 After packaging, run the real isolated MCP journeys described in [the build guide](BUILDING.md). Native verification must also cover notes, space emphasis, session refresh, graph inspection and recorded replay. Unit tests supplement those boundaries.
 
