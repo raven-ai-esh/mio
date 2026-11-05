@@ -1,0 +1,6 @@
+{
+  "name":"Mio", "product":"Mio", "app_name":"Mio.app", "bundle_id":"app.mio.memory",
+  "version":"0.5.3", "build":"15", "minimum_macos":"15.0", "architectures":["arm64"], "builder":"mio",
+  "executables":["MioEmbedWorker","Mio"], "signed_resources":["MacOS/mlx.metallib"],
+  "required_resources":["MacOS/mlx.metallib","Resources/ModelManifest.json","Resources/Mio_Mio.bundle","Resources/AppIcon.icns","Resources/ThirdParty"]
+}
