@@ -1,0 +1,23 @@
+Mio 0.5.3 — macOS 15+, Apple Silicon
+
+Public binaries must be Developer ID signed and notarized. A file labelled
+candidate is for local QA and is not the public installer.
+
+1. Download the DMG from https://github.com/raven-ai-esh/mio/releases.
+2. Open it and drag Mio.app to Applications. Quit an older Mio before replacing.
+3. Open Mio from Applications. Create a space and a note.
+4. In Codex & agents, create a profile and follow the displayed MCP setup.
+5. Optional: download the local embedding model from Mio settings (~514 MB).
+   Notes and lexical search are available before that download.
+
+Memory stays in ~/Library/Application Support/app.mio.memory, separately from
+the application. Updating/removing the application does not erase that folder.
+Back up important memory using Mio's export before updating.
+
+Current scope: English/Russian UI, local notes and source attachments, hybrid
+search, memory graph and MCP history. iCloud sync is optional; physical
+cross-device delivery has not been accepted. No iOS/iPadOS build is included.
+
+For integrity, compare the downloaded file with SHA256SUMS for the same release.
+The source ZIP and third-party notices are included with each prepared release.
+Report installation problems: https://github.com/raven-ai-esh/mio/issues.

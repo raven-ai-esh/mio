@@ -177,3 +177,11 @@ Mio is released under the [MIT License](LICENSE). Vendored components retain the
 A [Raven](https://github.com/raven-ai-esh) project.
 
 </div>
+
+## Release preparation
+
+The repository includes a [macOS distribution workflow](release/README.md) for
+verified ZIP/DMG candidates, signed/notarized assets, source snapshots and
+checksums. Public installer publication still requires Developer ID, Apple
+notarization and clean-Mac installation acceptance. See the [installation
+instructions](release/INSTALL.txt) and [release draft](release/NOTES.md).
