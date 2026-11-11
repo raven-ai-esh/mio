@@ -52,11 +52,25 @@ public struct MioError: Error, LocalizedError, Sendable {
     public let details: JSONValue
     public init(_ code: String, _ message: String, details: JSONValue = .null) { self.code = code; self.message = message; self.details = details }
     public var errorDescription: String? { message }
+
+    static func invalidArgument(_ field: String, reason: String = "invalid_value", message: String) -> MioError {
+        invalidArguments([field], reason: reason, message: message)
+    }
+
+    static func invalidArguments(_ fields: [String], reason: String, message: String) -> MioError {
+        let issues: [JSONValue] = fields.map { .object(["field": .string($0), "reason": .string(reason)]) }
+        return MioError("invalid_params", message, details: .object(["argument_errors": .array(issues)]))
+    }
 }
 
 extension Dictionary where Key == String, Value == JSONValue {
     func string(_ key: String, _ fallback: String = "") -> String { self[key]?.stringValue ?? fallback }
     func required(_ key: String) throws -> String {
-        guard let v = self[key]?.stringValue, !v.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw MioError("invalid_params", "Missing \(key)") }; return v
+        guard let value = self[key] else { throw MioError.invalidArgument(key, reason: "missing", message: "Missing \(key).") }
+        guard let v = value.stringValue else { throw MioError.invalidArgument(key, reason: "wrong_type", message: "\(key) must be a string.") }
+        guard !v.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw MioError.invalidArgument(key, message: "\(key) must not be empty.")
+        }
+        return v
     }
 }

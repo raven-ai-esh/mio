@@ -9,20 +9,40 @@ extension MioStore {
     }
     func semanticParams(_ params: [String:JSONValue]) -> [String:JSONValue] { var p = params; p.removeValue(forKey:"_mio_interaction"); return p }
     func tracedMethod(_ method: String, _ scope: Scope) -> Bool { !scope.human && !method.hasPrefix("interaction.") && !["snapshot","diagnostics","sync.pending","replica.record"].contains(method) }
-    func operationRequest(_ method: String, _ p: [String:JSONValue]) -> JSONValue {
+    func operationRequest(_ method: String, _ p: [String:JSONValue], targets: Set<String>) -> JSONValue {
         var d: [String:JSONValue] = [:]
         let labels=["kind","id","note_id","space_id","from_note_id","to_note_id","expected_revision","revision_id","scope","status","idempotency_key"]
         for key in labels {
+            if method == "read", p["kind"] == .string("spaces"), key == "id" || key == "revision_id" { continue }
             if let value = p[key]?.stringValue { d[key] = .string(value) }
         }
         for key in ["offset","limit","max_chars"] { if let value = p[key] { d[key] = value } }
+        if method == "search", let filter = p["space_ids"] {
+            d["space_ids"] = .array(filter.arrayValue.isEmpty ? [] : targets.sorted().map(JSONValue.string))
+        }
+        let issues = Self.safeArgumentErrors(p["argument_errors"] ?? .null)
+        if !issues.isEmpty { d["argument_errors"] = .array(issues) }
+
         if let query = p["query"]?.stringValue { d["query"] = .string(query); d["query_hash"] = .string(hash(Data(query.utf8))); d["query_chars"] = .number(Double(query.count)); d["query_truncated"] = .bool(query.count>1024) }
         var safe=automaticTrace(.object(d)).objectValue
         for key in labels { if let value=safe[key]?.stringValue { safe[key] = .string(String(value.prefix(200))) } }
         if let value=safe["query"]?.stringValue { safe["query"] = .string(String(value.prefix(1024))) }
         return .object(safe)
     }
-    func interactionSpaces(_ method: String, _ p: [String:JSONValue], _ scope: Scope, result: JSONValue = .null) throws -> Set<String> {
+    static func safeArgumentErrors(_ value: JSONValue) -> [JSONValue] {
+        let fields: Set<String> = ["arguments", "kind", "query", "scope", "space_ids", "limit", "max_chars",
+            "as_of", "from", "to", "cursor", "id", "revision_id", "offset", "space_id", "title", "body",
+            "status", "source_ids", "idempotency_key", "file_name", "mime_type", "file_base64", "note_id",
+            "expected_revision", "from_note_id", "to_note_id"]
+        let reasons: Set<String> = ["missing", "unexpected", "wrong_type", "invalid_value"]
+        return value.arrayValue.prefix(24).compactMap { issue in
+            guard let reason = issue["reason"].stringValue, reasons.contains(reason),
+                  let field = issue["field"].stringValue else { return nil }
+            return .object(["field": .string(fields.contains(field) ? field : "arguments"), "reason": .string(reason)])
+        }
+    }
+
+    func interactionSpaces(_ method: String, _ p: [String:JSONValue], _ scope: Scope) throws -> Set<String> {
         // Catalog totals and names depend on the complete current readable set,
         // including spaces outside the returned page.
         if method == "read", p["kind"] == .string("spaces") { return scope.readable }
@@ -31,6 +51,10 @@ extension MioStore {
             if let filter = p["space_ids"], !filter.arrayValue.isEmpty { spaces.formIntersection(filter.arrayValue.compactMap(\.stringValue)) }
             return spaces
         }
+        return try interactionPayloadSpaces(p, scope, result: .null)
+    }
+
+    private func interactionPayloadSpaces(_ p: [String: JSONValue], _ scope: Scope, result: JSONValue) throws -> Set<String> {
         var spaces = Set<String>()
         if let space = p["space_id"]?.stringValue, scope.readable.contains(space) { spaces.insert(space) }
         var refs = ["id","note_id","from_note_id","to_note_id","revision_id","expected_revision"].compactMap { p[$0]?.stringValue }
@@ -78,28 +102,46 @@ extension MioStore {
         let requestID = String((metadata["request_id"].stringValue ?? UUID().uuidString.lowercased()).prefix(128))
         let callID = "call-" + hash(Data((scope.actor + "\u{0}" + session["id"].stringValue! + "\u{0}" + requestID).utf8))
         let fingerprint = hash(try JSONValue.object(["method":.string(method),"params":.object(semanticParams(params))]).encoded())
-        var required = try interactionSpaces(method,params,scope); required.insert(session["space_id"].stringValue!)
+        let targets = try interactionSpaces(method, params, scope)
+        var required = targets
+        required.insert(session["space_id"].stringValue!)
+        // The recorded search query is caller text and retains its existing
+        // profile-wide visibility check. Targets describe the actual filter.
+        if method == "search" { required.formUnion(scope.readable) }
         if let old = try entity("interaction",callID) {
             guard old["request_fingerprint"].stringValue == fingerprint else { throw MioError("interaction_mismatch","The same request identifier was reused with different parameters") }
             if !identityOnly { try requireVisibility(old,scope) }
             return InteractionAttempt(id:callID,sessionID:session["id"].stringValue!,started:old["started_at"].stringValue!,request:old["request"],fingerprint:fingerprint,created:false,required:Set(old["required_space_ids"].arrayValue.compactMap(\.stringValue)),targets:Set(old["target_space_ids"].arrayValue.compactMap(\.stringValue)),metadata:metadata)
         }
         guard session["session_state"].stringValue == "open" else { throw MioError("session_closed","Use a new transport session for a new memory request") }
-        let started = now(), targets = try interactionSpaces(method,params,scope)
-        let attempt = InteractionAttempt(id:callID,sessionID:session["id"].stringValue!,started:started,request:identityOnly ? .object(["request_hash":.string(fingerprint)]) : operationRequest(method,params),fingerprint:fingerprint,created:true,required:required,targets:targets,metadata:metadata)
+        let started = now()
+        let attempt = InteractionAttempt(id:callID,sessionID:session["id"].stringValue!,started:started,request:identityOnly ? .object(["request_hash":.string(fingerprint)]) : operationRequest(method, params, targets: targets),fingerprint:fingerprint,created:true,required:required,targets:targets,metadata:metadata)
         let event = try interactionEvent(attempt,scope:scope,method:method,phase:"start",outcome:"in_progress",result:.null,errorCode:nil,replayed:false,original:nil)
         _ = try record("event",entityID:event["id"].stringValue!,data:event)
         return attempt
     }
-    func interactionEvent(_ call: InteractionAttempt, scope: Scope, method: String, phase: String, outcome: String, result: JSONValue, errorCode: String?, replayed: Bool, original: String?) throws -> JSONValue {
+    func interactionEvent(_ call: InteractionAttempt, scope: Scope, method: String, phase: String, outcome: String, result: JSONValue, errorCode: String?, replayed: Bool, original: String?, searchParams: [String: JSONValue]? = nil) throws -> JSONValue {
         let session = try entity("session",call.sessionID)!, sourceID = call.id + ":" + phase
         let eid = "event-" + hash(Data((call.sessionID + "\u{0}initial\u{0}" + sourceID).utf8))
         let finished = now(), interrupted = outcome == "interrupted"
         let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime,.withFractionalSeconds]
         let elapsed = max(0,(formatter.date(from:finished)?.timeIntervalSince(formatter.date(from:call.started) ?? Date()) ?? 0)*1000)
         var targets = call.targets
-        if !interrupted { targets.formUnion(try interactionSpaces(method,[:],scope,result:result)) }
-        var required = call.required; required.formUnion(targets)
+        var required = call.required
+        var request = call.request
+        if method == "search", !interrupted {
+            // Search results can only depend on the reauthorized readable
+            // spaces, which may differ from the set before encoding.
+            required.formUnion(scope.readable)
+            if let searchParams {
+                targets = try interactionSpaces(method, searchParams, scope)
+                request = operationRequest(method, searchParams, targets: targets)
+            }
+        } else if phase == "end", !interrupted, result != .null {
+            let dependencies = try interactionPayloadSpaces([:], scope, result: result)
+            required.formUnion(dependencies)
+            targets.formUnion(dependencies)
+        }
         let refs = operationResultRefs(result)
         let mutations: Set<String> = ["note.create","note.update","note.delete","note.restore","note.resolve","link.create","link.delete"]
         let ownReceipt = mutations.contains(method) ? result["receipt"] : .null
@@ -109,12 +151,20 @@ extension MioStore {
         if phase == "end" { text += " Result references: " + refs.arrayValue.flatMap { reference in ["id","revision_id","source_id"].compactMap { reference[$0].stringValue } }.joined(separator:",") }
         if let errorCode { text += " Error code: " + errorCode + "." }
         if replayed { text += " Logical operation replayed; no new domain write." }
-        var event: [String:JSONValue] = ["id":.string(eid),"source_id":.string(sourceID),"session_id":.string(call.sessionID),"space_id":session["space_id"],"kind":.string("memory_operation"),"role":.string("agent"),"tool_name":.string(method),"text":.string(text),"timestamp":.string(phase == "start" ? call.started : finished),"outcome":.string(outcome),"generation":.string("initial"),"source_sequence":.number(Double(session["event_count"].intValue)),"interaction_id":.string(call.id),"phase":.string(phase),"method":.string(method),"actor":.string(scope.actor),"request":call.request,"request_fingerprint":.string(call.fingerprint),"required_space_ids":.array(required.sorted().map(JSONValue.string)),"target_space_ids":.array(targets.sorted().map(JSONValue.string)),"started_at":.string(call.started),"finished_at":phase == "end" && !interrupted ? .string(finished) : .null,"duration_ms":phase == "end" && !interrupted ? .number(elapsed) : .null,"observed_duration_ms":phase == "end" ? .number(elapsed) : .null,"owner_pid":call.metadata["owner_pid"] == .null ? .number(Double(getpid())) : call.metadata["owner_pid"],"owner_device_id":.string(deviceID),"observing_pid":.number(Double(getpid())),"adapter_pid":call.metadata["adapter_pid"],"client_name":.string(String((call.metadata["client_name"].stringValue ?? "").prefix(120))),"client_version":.string(String((call.metadata["client_version"].stringValue ?? "").prefix(80))),"result_refs":phase == "end" ? refs : .array([]),"result_count":.number(Double(result["results"].arrayValue.count)),"receipt":ownReceipt,"operation_id":ownReceipt["operation_id"],"replayed":.bool(replayed),"original_interaction_id":original.map(JSONValue.string) ?? .null,"response_delivery":.string("not_observed")]
+        var event: [String:JSONValue] = ["id":.string(eid),"source_id":.string(sourceID),"session_id":.string(call.sessionID),"space_id":session["space_id"],"kind":.string("memory_operation"),"role":.string("agent"),"tool_name":.string(method),"text":.string(text),"timestamp":.string(phase == "start" ? call.started : finished),"outcome":.string(outcome),"generation":.string("initial"),"source_sequence":.number(Double(session["event_count"].intValue)),"interaction_id":.string(call.id),"phase":.string(phase),"method":.string(method),"actor":.string(scope.actor),"request":request,"request_fingerprint":.string(call.fingerprint),"required_space_ids":.array(required.sorted().map(JSONValue.string)),"target_space_ids":.array(targets.sorted().map(JSONValue.string)),"started_at":.string(call.started),"finished_at":phase == "end" && !interrupted ? .string(finished) : .null,"duration_ms":phase == "end" && !interrupted ? .number(elapsed) : .null,"observed_duration_ms":phase == "end" ? .number(elapsed) : .null,"owner_pid":call.metadata["owner_pid"] == .null ? .number(Double(getpid())) : call.metadata["owner_pid"],"owner_device_id":.string(deviceID),"observing_pid":.number(Double(getpid())),"adapter_pid":call.metadata["adapter_pid"],"client_name":.string(String((call.metadata["client_name"].stringValue ?? "").prefix(120))),"client_version":.string(String((call.metadata["client_version"].stringValue ?? "").prefix(80))),"result_refs":phase == "end" ? refs : .array([]),"result_count":.number(Double(result["results"].arrayValue.count)),"receipt":ownReceipt,"operation_id":ownReceipt["operation_id"],"replayed":.bool(replayed),"original_interaction_id":original.map(JSONValue.string) ?? .null,"response_delivery":.string("not_observed")]
         if result["kind"] == .string("spaces") { event["result_count"] = .number(Double(result["spaces"].arrayValue.count)) }
         if phase == "end", errorCode == nil, !interrupted, method == "read", result["links_state"] != .null {
             event["issued_graph"] = issuedGraph(result)
         }
+        if phase == "end", method == "search" {
+            if result["search_timing_ms"] != .null { event["search_timing_ms"] = result["search_timing_ms"] }
+            if result["evidence_status"] != .null { event["evidence_status"] = result["evidence_status"] }
+        }
         if let errorCode { event["error_code"] = .string(errorCode) }
+        if phase == "end", errorCode == "invalid_params" {
+            let issues = Self.safeArgumentErrors(call.request["argument_errors"])
+            if !issues.isEmpty { event["argument_errors"] = .array(issues) }
+        }
         return automaticTrace(.object(event))
     }
     // Capture exactly the authorized page returned by read. Bodies and global
@@ -151,11 +201,13 @@ extension MioStore {
         }
         return automaticTrace(.array(refs))
     }
-    func finishInteraction(_ call: InteractionAttempt, scope: Scope, method: String, result: JSONValue, errorCode: String? = nil, replayed: Bool = false, original: String? = nil, interrupted: Bool = false) throws {
+    func finishInteraction(_ call: InteractionAttempt, scope: Scope, method: String, result: JSONValue, errorCode: String? = nil, replayed: Bool = false, original: String? = nil, interrupted: Bool = false, errorDetails: JSONValue = .null, searchParams: [String: JSONValue]? = nil) throws {
         if try entity("interaction",call.id)?["end_event_id"].stringValue != nil { return }
         let outcome = interrupted ? "interrupted" : errorCode == nil ? "success" : errorCode == "revision_conflict" ? "revision_conflict" : "error"
-        let event = try interactionEvent(call,scope:scope,method:method,phase:"end",outcome:outcome,result:result,errorCode:errorCode,replayed:replayed,original:original)
-        _ = try record("event",entityID:event["id"].stringValue!,data:event)
+        var event = try interactionEvent(call,scope:scope,method:method,phase:"end",outcome:outcome,result:result,errorCode:errorCode,replayed:replayed,original:original,searchParams:searchParams).objectValue
+        let issues = Self.safeArgumentErrors(errorDetails["argument_errors"])
+        if errorCode == "invalid_params", !issues.isEmpty { event["argument_errors"] = .array(issues) }
+        _ = try record("event",entityID:event["id"]!.stringValue!,data:.object(event))
     }
     func projectInteraction(_ event: JSONValue) throws {
         guard event["kind"].stringValue == "memory_operation", let id = event["interaction_id"].stringValue else { return }
@@ -219,7 +271,7 @@ extension MioStore {
         if let end, !contradictory {
             current["state"] = .string(end["outcome"].stringValue == "success" ? "completed" : end["outcome"].stringValue == "interrupted" ? "interrupted" : "failed")
             current["end_event_id"] = end["id"]
-            for key in ["finished_at","duration_ms","observed_duration_ms","outcome","error_code","result_refs","result_count","receipt","operation_id","replayed","original_interaction_id"] { current[key] = end[key] }
+            for key in ["finished_at","duration_ms","observed_duration_ms","outcome","error_code","result_refs","result_count","search_timing_ms","evidence_status","argument_errors","receipt","operation_id","replayed","original_interaction_id"] { current[key] = end[key] }
             current["response_delivery"] = .string("not_observed")
             observations = events.filter { event in
                 guard event["phase"] == .string("delivery"), !event["purged"].boolValue, matches(event),
@@ -252,7 +304,11 @@ extension MioStore {
         // using that same immutable ID; retain it for owner inspection instead.
         current["has_untrusted_execution_end"] = .bool(retained.contains{ event in event["phase"] == .string("end") && !accepted.contains(where:{$0["id"] == event["id"]})})
         current["required_space_ids"] = .array(Set(retained.flatMap { $0["required_space_ids"].arrayValue.compactMap(\.stringValue) + [$0["space_id"].stringValue].compactMap{$0} }).sorted().map(JSONValue.string))
-        current["target_space_ids"] = .array(Set(retained.flatMap { $0["target_space_ids"].arrayValue.compactMap(\.stringValue) }).sorted().map(JSONValue.string))
+        if source["method"] == .string("search"), !contradictory {
+            current["target_space_ids"] = source["target_space_ids"]
+        } else {
+            current["target_space_ids"] = .array(Set(retained.flatMap { $0["target_space_ids"].arrayValue.compactMap(\.stringValue) }).sorted().map(JSONValue.string))
+        }
         try put("interaction",.object(current))
     }
     func isMemoryInteractionEvent(_ value: JSONValue) -> Bool {
@@ -303,8 +359,15 @@ extension MioStore {
             var d = session.objectValue; d["session_state"] = .string("closed"); d["closed_at"] = .string(now()); _ = try record("session",entityID:session["id"].stringValue!,data:.object(d)); return .object(["session_id":session["id"],"session_state":.string("closed"),"closed_at":d["closed_at"]!])
         }
         let operation = p.string("method","unrecognized_operation")
-        let call = try beginInteraction(operation,["_mio_interaction":metadata],scope)
-        if method == "interaction.call.reject" { try finishInteraction(call,scope:scope,method:operation,result:.null,errorCode:"invalid_params") }
+        var request = ["_mio_interaction": metadata]
+        if method == "interaction.call.reject" {
+            let issues = Self.safeArgumentErrors(p["argument_errors"] ?? .null)
+            if !issues.isEmpty { request["argument_errors"] = .array(issues) }
+        }
+        let call = try beginInteraction(operation, request, scope)
+        if method == "interaction.call.reject" {
+            try finishInteraction(call, scope: scope, method: operation, result: .null, errorCode: "invalid_params")
+        }
         return .object(["session_id":.string(call.sessionID),"interaction_id":.string(call.id),"outcome":.string(method == "interaction.call.reject" ? "error" : "in_progress")])
     }
 }

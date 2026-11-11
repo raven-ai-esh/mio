@@ -140,7 +140,10 @@ extension MioStore {
             if method == "note.restore" { values["cleared_deletions"] = .array(try records("note.delete",id).map { $0["id"] }); values["restored_from"] = .string(chosen) }
             else { values["resolved_from"] = .string(chosen) }
         }
-        guard let title = values["title"]?.stringValue, !title.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty, values["body"]?.stringValue != nil else { throw MioError("invalid_params", "A note requires a title and text body") }
+        _ = try values.required("title")
+        guard values["body"]?.stringValue != nil else {
+            throw MioError.invalidArgument("body", reason: values["body"] == nil ? "missing" : "wrong_type", message: "A note requires a text body.")
+        }
         try validateSources(.array((values["source_ids"] ?? .array([])).arrayValue.filter { !retainedSources.contains($0) }),s)
         let rid = UUID().uuidString.lowercased()
         values["id"] = .string(rid); values["note_id"] = .string(id); values["author"] = .string(s.actor); values["timestamp"] = .string(now())
@@ -153,7 +156,9 @@ extension MioStore {
     }
     func validateSources(_ sources: JSONValue, _ s: Scope) throws {
         for source in sources.arrayValue {
-            guard let id = source.stringValue else { throw MioError("invalid_params", "Source IDs must be strings") }
+            guard let id = source.stringValue else {
+                throw MioError.invalidArgument("source_ids", reason: "wrong_type", message: "Source IDs must be strings.")
+            }
             if try id.hasPrefix("source-") || entity("attachment",id)?["kind"] == .string("memory_file") || entity("event",id) != nil || entity("revision",id) != nil || entity("note",id) != nil { try requireSourceReference(id,s) }
             else if !s.human && !id.hasPrefix("https://") && !id.hasPrefix("http://") { throw MioError("invalid_source", "Source is unavailable or outside this profile") }
         }

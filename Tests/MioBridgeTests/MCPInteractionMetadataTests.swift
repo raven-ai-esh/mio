@@ -47,6 +47,9 @@ final class MCPInteractionMetadataTests: XCTestCase {
         let firstReplies = try run([initialize, search, read, malicious, initialize], name: "first")
         XCTAssertEqual(firstReplies[1]["result"]["structuredContent"]["actor"], .string("agent"))
         XCTAssertEqual(firstReplies[3]["error"]["code"].intValue, -32602)
+        let issues = firstReplies[3]["error"]["data"]["argument_errors"].arrayValue
+        XCTAssertEqual(issues.first?["field"], .string("_mio_interaction"))
+        XCTAssertEqual(issues.first?["reason"], .string("unexpected"))
         XCTAssertEqual(firstReplies[4]["error"]["code"].intValue, -32600)
         XCTAssertEqual(records.values.count, 2)
         let first = records.values[0], same = records.values[1]

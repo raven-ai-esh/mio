@@ -62,3 +62,58 @@ final class HybridSearchTests: XCTestCase {
         let failed=try call("search",["query":.string("exact")]);XCTAssertEqual(failed["semantic_state"],.string("error"));XCTAssertEqual(failed["results"].arrayValue.count,1)
     }
 }
+
+extension HybridSearchTests {
+    func testEvidenceAndTimingsPreserveExactSourceAnchors() throws {
+        let scope = try space("Search quality")
+        let expected = try note(scope, "Receipt checksum", "Compare the checksum with the original receipt.")
+        _ = try note(scope, "Weather report", "Observed weather and temperature.")
+        try indexAll()
+        configure()
+        let exact = try call("search", ["query": .string("Receipt checksum"), "space_ids": .array([scope]), "scope": .string("notes")])
+        XCTAssertEqual(exact["evidence_status"], .string("word_match"))
+        let exactHit = try XCTUnwrap(exact["results"].arrayValue.first)
+        XCTAssertEqual(exactHit["id"], expected["id"])
+        XCTAssertEqual(exactHit["match_evidence"], .string("word_and_semantic"))
+        for stage in ["query_encoding", "keyword_retrieval", "source_loading", "ranking", "coverage"] {
+            guard case .number(let duration) = exact["search_timing_ms"][stage] else {
+                return XCTFail("Missing search stage " + stage)
+            }
+            XCTAssertGreaterThanOrEqual(duration, 0)
+        }
+
+        let weak = try call("search", ["query": .string("qzxvkthp89nor wqfr872psndlx"), "space_ids": .array([scope]), "scope": .string("notes")])
+        XCTAssertEqual(weak["evidence_status"], .string("weak"))
+        XCTAssertEqual(weak["evidence_reason"], .string("semantic_only"))
+        let candidate = try XCTUnwrap(weak["results"].arrayValue.first)
+        XCTAssertEqual(candidate["match_evidence"], .string("semantic_only"))
+        guard case .number = candidate["semantic_similarity"] else { return XCTFail("Missing semantic similarity") }
+        let source = try call("read", ["kind": .string("source"), "id": candidate["source_id"]])
+        XCTAssertEqual(source["revision_id"], candidate["revision_id"])
+    }
+
+    func testCoverageCountsOnlyScopedLiveNotesAndPendingFiles() throws {
+        let allowed = try space("Allowed"), excluded = try space("Excluded")
+        _ = try note(allowed, "Receipt", "Receipt evidence")
+        let deleted = try note(allowed, "Deleted", "Old receipt evidence")
+        _ = try call("note.delete", ["note_id": deleted["id"]])
+        _ = try note(excluded, "Outside", "Receipt evidence outside the chosen space")
+        let png = try XCTUnwrap(Bundle.module.url(forResource: "record-02", withExtension: "png", subdirectory: "Fixtures/Hybrid"))
+        let file = try call("note.create", [
+            "space_id": allowed, "title": .string("Receipt image"), "body": .string("Pending receipt evidence"),
+            "file_name": .string("receipt.png"), "mime_type": .string("image/png"),
+            "file_base64": .string(try Data(contentsOf: png).base64EncodedString())
+        ])
+        var query: [String: JSONValue] = ["query": .string("Receipt"), "space_ids": .array([allowed])]
+        let all = try call("search", query)
+        XCTAssertEqual(all["visible_sources"].intValue, 2)
+        XCTAssertEqual(all["lexical_pending_sources"].intValue, 1)
+        query["scope"] = .string("notes")
+        let notes = try call("search", query)
+        XCTAssertEqual(notes["visible_sources"].intValue, 1)
+        XCTAssertEqual(notes["lexical_pending_sources"].intValue, 0)
+        query["scope"] = .string("files")
+        XCTAssertEqual(try call("search", query)["visible_sources"].intValue, 1)
+        XCTAssertTrue(try call("search", query)["results"].arrayValue.contains { $0["id"] == file["id"] })
+    }
+}

@@ -11,6 +11,7 @@ extension MioStore {
     func ensureSourceIndex() throws {
         try db.exec("CREATE TABLE IF NOT EXISTS source_fragments(id TEXT PRIMARY KEY,note_id TEXT NOT NULL,revision_id TEXT NOT NULL,file_id TEXT NOT NULL,space_id TEXT NOT NULL,signature TEXT NOT NULL,current INTEGER NOT NULL,json TEXT NOT NULL,model_id TEXT NOT NULL,embedding TEXT)")
         try db.exec("CREATE INDEX IF NOT EXISTS source_fragments_note ON source_fragments(note_id,current)")
+        try db.exec("CREATE INDEX IF NOT EXISTS source_fragments_live_space ON source_fragments(space_id) WHERE current=1")
         try db.exec("CREATE TABLE IF NOT EXISTS source_index_jobs(note_id TEXT PRIMARY KEY,signature TEXT NOT NULL,model_id TEXT NOT NULL,state TEXT NOT NULL,error TEXT NOT NULL)")
     }
     public func configureSemanticSearch(queryEncoder: @escaping (String) throws -> MioSemanticQuery, imageRenderer: @escaping (JSONValue,Data,JSONValue) throws -> Data, mode: MioRetrievalMode = .hybrid) {

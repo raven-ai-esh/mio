@@ -86,4 +86,21 @@ final class SpaceCatalogTests: XCTestCase {
         _ = try call("connection.delete",["connection_id":mount["id"]])
         assertError("forbidden") { try self.call("read",["kind":.string("event"),"id":event["id"]],context) }
     }
+
+    func testCatalogRejectsIDsWithFieldDiagnosticsAndOmitsValuesFromHistory() throws {
+        let home = try space("Home"), (_, context) = try agent(home)
+        let rejected = ["id": "INVALID_CATALOG_ID", "revision_id": "INVALID_CATALOG_REVISION"]
+        let expected: JSONValue = .array(rejected.keys.sorted().map {
+            .object(["field": .string($0), "reason": .string("unexpected")])
+        })
+        XCTAssertThrowsError(try catalog(context, rejected.mapValues(JSONValue.string))) { error in
+            XCTAssertEqual((error as? MioError)?.code, "invalid_params")
+            XCTAssertEqual((error as? MioError)?.details["argument_errors"], expected)
+        }
+        let end = try XCTUnwrap(try call("snapshot")["events"].arrayValue.first { $0["phase"] == .string("end") })
+        XCTAssertEqual(end["argument_errors"], expected)
+        for field in rejected.keys { XCTAssertEqual(end["request"][field], .null) }
+        let rows = try store.db.rows("SELECT json FROM audit")
+        for value in rejected.values { XCTAssertFalse(rows.contains { $0["json"]?.contains(value) == true }) }
+    }
 }

@@ -360,8 +360,10 @@ import UniformTypeIdentifiers
     }
     func search() {
         searchTask?.cancel()
+        searchResults = []
+        searchStatus = .null
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty else { searchResults = []; searchWorking = false; return }
+        guard !q.isEmpty else { searchWorking = false; return }
         searchWorking = true
         let scope = searchScope; let ids = visibleSpaceIDs
         searchTask = Task {

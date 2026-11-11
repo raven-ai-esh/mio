@@ -199,7 +199,13 @@ struct SearchView: View {
             SearchModelStatus().padding(.horizontal, 24).padding(.bottom, 14)
             if !model.searchStatus["semantic_state"].text.isEmpty && !model.query.isEmpty {
                 Text(searchModeLabel).font(.caption).foregroundStyle(.secondary).padding(.horizontal, 24).padding(.bottom, 10)
-                Text(model.l("Результаты — кандидаты. Откройте источник, чтобы проверить его содержание.")).font(.caption).foregroundStyle(.secondary).padding(.horizontal,24).padding(.bottom,10)
+                if !model.searchWorking, model.searchStatus["evidence_status"].text == "weak" {
+                    Label(model.l("Совпадения только по смыслу. Проверьте точный источник."), systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.secondary).padding(.horizontal,24).padding(.bottom,10)
+                        .accessibilityIdentifier("search.weakEvidence")
+                } else {
+                    Text(model.l("Результаты — кандидаты. Откройте источник, чтобы проверить его содержание.")).font(.caption).foregroundStyle(.secondary).padding(.horizontal,24).padding(.bottom,10)
+                }
             }
             Divider()
             if model.searchWorking { ProgressView(model.l("Поиск…")).frame(maxWidth: .infinity, maxHeight: .infinity) }

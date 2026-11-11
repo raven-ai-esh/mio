@@ -51,6 +51,23 @@ import MioCore
         for _ in 0..<30 { if !model.searchWorking { break };try await Task.sleep(for:.milliseconds(30)) }
         XCTAssertEqual(model.query,"cancellation costs");XCTAssertEqual(model.searchResults.first?["id"],n["id"])
     }
+    func testSearchFailureClearsPreviousEvidenceAndResults() async throws {
+        let space = try await model.execute("space.create", ["name": .string("Search state")])["id"]
+        _ = try await model.execute("note.create", ["space_id": space, "title": .string("Checksum receipt"), "body": .string("Checksum receipt")])
+        await model.refresh()
+        model.query = "checksum receipt"
+        model.search()
+        for _ in 0..<40 { if !model.searchWorking { break }; try await Task.sleep(for: .milliseconds(30)) }
+        XCTAssertEqual(model.searchStatus["evidence_status"], .string("word_match"))
+        XCTAssertFalse(model.searchResults.isEmpty)
+        model.searchScope = "unsupported"
+        model.search()
+        for _ in 0..<40 { if !model.searchWorking { break }; try await Task.sleep(for: .milliseconds(30)) }
+        XCTAssertFalse(model.searchWorking)
+        XCTAssertFalse(model.failure.isEmpty)
+        XCTAssertTrue(model.searchResults.isEmpty)
+        XCTAssertEqual(model.searchStatus, .null)
+    }
     func testPurgeClearsRetiredSubscriptionPreferenceAndDoesNotResurrect() async throws {
         let space = try await model.execute("space.create", ["name": .string("Source test")])["id"].text
         _ = try await model.execute("history.import", ["space_id": .string(space), "source": .string("codex"), "external_id": .string("selected-source"), "title": .string("Source"), "events": .array([.object(["source_id": .string("evt"), "kind": .string("message"), "role": .string("user"), "text": .string("temporary evidence"), "timestamp": .string("2026-10-11T00:00:00Z")])])])

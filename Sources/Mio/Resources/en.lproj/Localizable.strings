@@ -439,3 +439,4 @@
 "Could not lock the daily review state." = "Could not lock the daily review state.";
 "The harness exited without writing an analysis to stdout." = "The harness exited without writing an analysis to stdout.";
 "Выбрать…" = "Choose…";
+"Совпадения только по смыслу. Проверьте точный источник." = "Semantic matches only. Check the exact source.";

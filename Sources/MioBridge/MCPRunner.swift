@@ -121,15 +121,24 @@ public enum MCPRunner {
                     continue
                 }
                 guard case .object(let arguments) = request["params"]["arguments"] else {
-                    _ = try? client.call("interaction.call.reject", params: ["method": .string(operation), "error_code": .string("invalid_params"), "_mio_interaction": callMetadata])
-                    try sendToolReply(rpcError(id: id, code: -32602, message: "Tool arguments must be an object."), metadata: callMetadata)
+                    let issues = [argumentIssue("arguments", "wrong_type")]
+                    _ = try? client.call("interaction.call.reject", params: ["method": .string(operation),
+                        "error_code": .string("invalid_params"), "argument_errors": .array(issues), "_mio_interaction": callMetadata])
+                    try sendToolReply(rpcError(id: id, code: -32602, message: "Tool arguments must be an object.",
+                                              data: .object(["argument_errors": .array(issues)])), metadata: callMetadata)
                     continue
                 }
                 let schema = toolDefinitions.first { $0["name"].stringValue == name }!["inputSchema"]
-                let hasReadID = name != "read" || arguments["kind"] == .string("spaces") || arguments["id"] != nil
-                if !hasReadID || !validArguments(arguments, schema: schema) {
-                    _ = try? client.call("interaction.call.reject", params: ["method": .string(operation), "error_code": .string("invalid_params"), "_mio_interaction": callMetadata])
-                    try sendToolReply(rpcError(id: id, code: -32602, message: "Tool arguments do not match the Mio schema."), metadata: callMetadata)
+                var issues = argumentErrors(arguments, schema: schema)
+                if name == "read", arguments["kind"] != .string("spaces"), arguments["id"] == nil {
+                    issues.append(argumentIssue("id", "missing"))
+                }
+                if !issues.isEmpty {
+                    _ = try? client.call("interaction.call.reject", params: ["method": .string(operation),
+                        "error_code": .string("invalid_params"), "argument_errors": .array(issues), "_mio_interaction": callMetadata])
+                    let fields = Set(issues.compactMap { $0["field"].stringValue }).sorted().joined(separator: ", ")
+                    try sendToolReply(rpcError(id: id, code: -32602, message: "Invalid tool arguments: \(fields).",
+                                              data: .object(["argument_errors": .array(issues)])), metadata: callMetadata)
                     continue
                 }
                 let reply: JSONValue
@@ -167,9 +176,10 @@ public enum MCPRunner {
     private static func rpcResult(id: JSONValue, result: JSONValue) -> JSONValue {
         .object(["jsonrpc": .string("2.0"), "id": id, "result": result])
     }
-    private static func rpcError(id: JSONValue, code: Int, message: String) -> JSONValue {
-        .object(["jsonrpc": .string("2.0"), "id": id,
-                 "error": .object(["code": .number(Double(code)), "message": .string(message)])])
+    private static func rpcError(id: JSONValue, code: Int, message: String, data: JSONValue? = nil) -> JSONValue {
+        var error: [String: JSONValue] = ["code": .number(Double(code)), "message": .string(message)]
+        if let data { error["data"] = data }
+        return .object(["jsonrpc": .string("2.0"), "id": id, "error": .object(error)])
     }
     private static func send(_ value: JSONValue, output: FileHandle) throws {
         var data = try value.encoded()
@@ -182,24 +192,45 @@ public enum MCPRunner {
         .object(["type": .string("object"), "properties": .object(properties),
                  "required": .array(required.map(JSONValue.string)), "additionalProperties": .bool(false)])
     }
-    private static func validArguments(_ args: [String: JSONValue], schema: JSONValue) -> Bool {
-        let properties = schema["properties"].objectValue
-        guard args.keys.allSatisfy({ properties[$0] != nil }),
-              schema["required"].arrayValue.allSatisfy({ args[$0.stringValue ?? ""] != nil }) else { return false }
-        for (key, value) in args {
-            let property = properties[key]!
-            switch property["type"].stringValue {
-            case "string": if case .string = value {} else { return false }
-            case "integer":
-                guard case .number(let number) = value, number.isFinite, number.rounded() == number,
-                      number >= 0, number <= 1_000_000_000 else { return false }
-            case "array":
-                guard case .array(let items) = value, items.allSatisfy({ if case .string = $0 { return true }; return false }) else { return false }
-            default: return false
-            }
-            if case .array(let values) = property["enum"], !values.contains(value) { return false }
+    private static func argumentIssue(_ field: String, _ reason: String) -> JSONValue {
+        let safeField = !field.isEmpty && field.utf8.count <= 64 && field.utf8.allSatisfy {
+            (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 95
         }
-        return true
+        return .object(["field": .string(safeField ? field : "arguments"), "reason": .string(reason)])
+    }
+
+    private static func argumentErrors(_ args: [String: JSONValue], schema: JSONValue) -> [JSONValue] {
+        let properties = schema["properties"].objectValue
+        var errors = schema["required"].arrayValue.compactMap(\.stringValue)
+            .filter { args[$0] == nil }.map { argumentIssue($0, "missing") }
+        for key in args.keys.sorted() {
+            guard errors.count < 24 else { break }
+            guard let property = properties[key] else {
+                errors.append(argumentIssue(key, "unexpected"))
+                continue
+            }
+            let value = args[key]!
+            let valid: Bool
+            switch property["type"].stringValue {
+            case "string":
+                valid = value.stringValue != nil
+            case "integer":
+                if case .number(let number) = value, number.isFinite, number.rounded() == number,
+                   number >= 0, number <= 1_000_000_000 {
+                    valid = true
+                } else { valid = false }
+            case "array":
+                if case .array(let items) = value { valid = items.allSatisfy { $0.stringValue != nil } }
+                else { valid = false }
+            default:
+                valid = false
+            }
+            if !valid { errors.append(argumentIssue(key, "wrong_type")) }
+            else if case .array(let values) = property["enum"], !values.contains(value) {
+                errors.append(argumentIssue(key, "invalid_value"))
+            }
+        }
+        return errors
     }
     private static let string: JSONValue = .object(["type": .string("string")])
     private static let strings: JSONValue = .object(["type": .string("array"), "items": string])
@@ -210,19 +241,20 @@ public enum MCPRunner {
     }
     public static var toolDefinitions: [JSONValue] {
         [
-            tool("search", "Hybrid BM25 plus local EmbeddingGemma2 search across authorized note fragments, PDF pages, image/OCR sources and Mio operation history. Inspect semantic_state/search_mode for fallback or incomplete indexing. Hits are candidates, not factual answers; preserve source_id/source_group_id/revision_id/locator and read the exact source. History describes only Mio searches, reads and writes.", schema([
+            tool("search", "Hybrid BM25 and local EmbeddingGemma2 search. Pass space_ids when the project is known. evidence_status=weak means the returned content has semantic matches without word corroboration. Read the exact source_id before using important claims. For scope=history, pass from (inclusive) or to (exclusive) as ISO 8601 timestamps; query may be empty. Follow next_cursor using the same filters. History describes Mio operations.", schema([
                 "query": string, "scope": .object(["type": .string("string"), "enum": .array(["all", "notes", "files", "history"].map(JSONValue.string))]),
-                "space_ids": strings, "limit": integer, "max_chars": integer, "as_of": string
+                "space_ids": strings, "limit": integer, "max_chars": integer, "as_of": string,
+                "from": string, "to": string, "cursor": string
             ], required: ["query"]), readOnly: true),
             tool("read", "Use kind=spaces without id to list authorized space names, IDs, can_read/can_write and default_space_id. Choose a name, then use the returned ID in search.space_ids or capture.space_id. Duplicate names have different IDs. Entries include description, color, parent_id, child_space_ids, subtree_space_ids and path. Visible connections list their direction/access; effective_for_profile identifies direct grants. Nesting never grants access; pass subtree_space_ids to search a parent and its authorized descendants. offset/limit page the catalog (default50, maximum200); follow next_offset. Other kinds require id: read a note, event, session or exact source. For a search source_id, use kind=source to receive its exact version, locator, text or MCP image content. File IDs show the original preview; offset is the zero-based PDF page. Current note reads include paged incoming/outgoing links from the same graph used by [[wikilinks]] and link, with neighbor IDs and small metadata. offset/limit page links (default50, maximum200); follow links_next_offset. Exact historical revisions omit current graph links. URL sources are not fetched. Authorization is checked anew.", schema([
                 "kind": .object(["type": .string("string"), "enum": .array(["spaces", "note", "event", "session", "source"].map(JSONValue.string))]),
                 "id": string, "revision_id": string, "offset": integer, "limit": integer
             ], required: ["kind"]), readOnly: true),
-            tool("capture", "Create durable knowledge with sources and an idempotency key. Optionally capture one immutable PDF or PNG/JPEG/HEIC/WebP/TIFF image using file_name, mime_type and file_base64 together (decoded max5MB; no filesystem paths). body is an annotation. Local commit precedes background indexing and cloud delivery. Repeating the key requires identical content.", schema([
+            tool("capture", "Create durable knowledge with an idempotency key. For evidence-backed claims include verified Mio source IDs or stable HTTP(S) links in source_ids. Optionally capture one immutable PDF or PNG/JPEG/HEIC/WebP/TIFF image using file_name, mime_type and file_base64 together (decoded max5MB; no filesystem paths). body is an annotation. Local commit precedes background indexing and cloud delivery. Repeating the key requires identical content.", schema([
                 "space_id": string, "title": string, "body": string, "status": string, "source_ids": strings, "idempotency_key": string,
                 "file_name": string, "mime_type": string, "file_base64": string
             ], required: ["space_id", "title", "body", "idempotency_key"]), readOnly: false),
-            tool("revise", "Create a note version from expected_revision. A stale base preserves your draft and reports revision_conflict. Check and resolve the conflict instead of reporting success.", schema([
+            tool("revise", "Create a note version from expected_revision. Retain existing source_ids and add verified sources for new evidence-backed claims. A stale base preserves your draft and reports revision_conflict. Check and resolve the conflict instead of reporting success.", schema([
                 "note_id": string, "expected_revision": string, "title": string, "body": string, "status": string, "source_ids": strings, "idempotency_key": string
             ], required: ["note_id", "expected_revision", "title", "body", "idempotency_key"]), readOnly: false),
             tool("link", "Connect two notes with a typed directional relation. You need write access to the source and read access to the destination. Linking does not grant access or mount other spaces.", schema([

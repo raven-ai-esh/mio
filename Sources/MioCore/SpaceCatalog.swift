@@ -2,7 +2,10 @@ import Foundation
 
 extension MioStore {
     func readSpaces(_ params: [String:JSONValue], _ scope: Scope) throws -> JSONValue {
-        guard params["id"] == nil, params["revision_id"] == nil else { throw MioError("invalid_params","read(kind=spaces) takes no id or revision_id") }
+        let unexpected = ["id", "revision_id"].filter { params[$0] != nil }
+        guard unexpected.isEmpty else {
+            throw MioError.invalidArguments(unexpected, reason: "unexpected", message: "read(kind=spaces) takes no id or revision_id.")
+        }
         let spaces = try all("space").filter { !$0["deleted"].boolValue && scope.readable.contains($0["id"].stringValue ?? "") }.sorted {
             $0["name"] == $1["name"] ? $0["id"].stringValue! < $1["id"].stringValue! : ($0["name"].stringValue ?? "") < ($1["name"].stringValue ?? "")
         }

@@ -36,6 +36,7 @@ final class MemoryInteractionTests: XCTestCase {
         let (s,space,c)=try fixture()
         XCTAssertThrowsError(try s.execute("note.create",params:["space_id":space,"body":.string("FAILED_DRAFT_NOT_STORED"),"_mio_interaction":metadata("fail")],context:c))
         let rows=try events(s); XCTAssertEqual(rows.count,2); let end=try XCTUnwrap(rows.first{$0["phase"] == .string("end")}); XCTAssertEqual(end["outcome"],.string("error")); XCTAssertEqual(end["error_code"],.string("invalid_params")); XCTAssertEqual(end["receipt"],.null)
+        XCTAssertEqual(end["argument_errors"].arrayValue.first?["field"], .string("title"))
         XCTAssertEqual(try s.execute("snapshot")["counts"]["notes"].intValue,0); XCTAssertFalse(String(decoding:try JSONValue.array(rows).encoded(),as:UTF8.self).contains("FAILED_DRAFT_NOT_STORED"))
     }
     func testSearchTraceExcludesItselfAndLegacyChatIsNotDefaultHistory() throws {
@@ -226,5 +227,144 @@ extension MemoryInteractionTests {
         let archive=s.directory.appendingPathComponent("clean.mio"); _=try s.execute("archive.export",params:["path":.string(archive.path)])
         XCTAssertFalse(String(decoding:try Data(contentsOf:archive),as:UTF8.self).contains(marker))
         XCTAssertTrue(s.interactionReplies.isEmpty)
+    }
+}
+
+extension MemoryInteractionTests {
+    func testScopedSearchTraceRetainsActualTargetAndRangedHistoryFiltersIt() throws {
+        let (store, home, agent) = try fixture()
+        let target = try store.execute("space.create", params: ["name": .string("Target")])["id"]
+        let other = try store.execute("space.create", params: ["name": .string("Other")])["id"]
+        for id in [target, other] {
+            _ = try store.execute("connection.create", params: ["from_space_id": home, "to_space_id": id, "access": .string("read")])
+        }
+        _ = try store.execute("note.create", params: ["space_id": target, "title": .string("Receipt marker"), "body": .string("Receipt marker")])
+        let search = try store.execute("search", params: [
+            "query": .string("Receipt marker"), "scope": .string("notes"),
+            "space_ids": .array([target]), "_mio_interaction": metadata("scoped-target")
+        ], context: agent)
+        let trace = try store.execute("snapshot")["interactions"].arrayValue
+        let entry = try XCTUnwrap(trace.first { $0["id"] == search["interaction_id"] })
+        XCTAssertEqual(entry["target_space_ids"], .array([target]))
+        XCTAssertEqual(entry["request"]["space_ids"], .array([target]))
+        XCTAssertEqual(Set(entry["required_space_ids"].arrayValue.compactMap(\.stringValue)),
+                       Set([home, target, other].compactMap(\.stringValue)))
+        guard case .number = entry["search_timing_ms"]["coverage"] else { return XCTFail("Missing journal timing") }
+        let range: [String: JSONValue] = ["query": .string(""), "scope": .string("history"), "from": .string("2000-01-01T00:00:00Z")]
+        var request = range
+        request["space_ids"] = .array([other])
+        XCTAssertTrue(try store.execute("search", params: request)["results"].arrayValue.isEmpty)
+        request["space_ids"] = .array([target])
+        let rows = try store.execute("search", params: request)["results"].arrayValue
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertTrue(rows.allSatisfy { $0["interaction_id"] == search["interaction_id"] })
+    }
+
+    func testSearchTraceUsesGrantsAtExecutionAfterEncoding() async throws {
+        let (store, home, agent) = try fixture()
+        let project = try store.execute("space.create", params: ["name": .string("Project")])["id"]
+        let note = try store.execute("note.create", params: ["space_id": project, "title": .string("Receipt marker"), "body": .string("Receipt marker")])
+        let entered = DispatchSemaphore(value: 0), resume = DispatchSemaphore(value: 0)
+        store.configureSemanticSearch(queryEncoder: { _ in
+            entered.signal()
+            guard resume.wait(timeout: .now() + 5) == .success else { throw MioError("fixture_timeout", "Encoder was not resumed") }
+            var vector = [Float](repeating: 0, count: 768)
+            vector[0] = 1
+            return MioSemanticQuery(modelID: "fixture", values: vector)
+        }, imageRenderer: { _, _, _ in Data() })
+        let pending = Task.detached {
+            try store.execute("search", params: ["query": .string("Receipt marker"), "scope": .string("notes"),
+                "space_ids": .array([home, project])], context: agent)
+        }
+        guard await Task.detached(operation: { entered.wait(timeout: .now() + 3) == .success }).value else {
+            resume.signal()
+            return XCTFail("Search did not reach query encoding")
+        }
+        defer { resume.signal() }
+        _ = try store.execute("connection.create", params: ["from_space_id": home, "to_space_id": project, "access": .string("read")])
+        resume.signal()
+        let response = try await pending.value
+        XCTAssertEqual(response["results"].arrayValue.first?["id"], note["id"])
+        let trace = try events(store).filter { $0["interaction_id"] == response["interaction_id"] }
+        let start = try XCTUnwrap(trace.first { $0["phase"] == .string("start") })
+        let end = try XCTUnwrap(trace.first { $0["phase"] == .string("end") })
+        XCTAssertEqual(start["target_space_ids"], .array([home]))
+        for key in [end["target_space_ids"], end["request"]["space_ids"], end["required_space_ids"]] {
+            XCTAssertEqual(Set(key.arrayValue.compactMap(\.stringValue)), Set([home, project].compactMap(\.stringValue)))
+        }
+    }
+
+    func testRangedHistoryPaginatesAndAppliesExclusiveEnd() throws {
+        let (store, space, agent) = try fixture()
+        for i in 0..<3 {
+            _ = try store.execute("read", params: ["kind": .string("spaces"), "_mio_interaction": metadata("range-\(i)")], context: agent)
+        }
+        let all = try events(store).sorted {
+            ($0["timestamp"].stringValue!, $0["id"].stringValue!) < ($1["timestamp"].stringValue!, $1["id"].stringValue!)
+        }
+        var params: [String: JSONValue] = ["query": .string(""), "scope": .string("history"), "space_ids": .array([space]),
+            "from": all.first!["timestamp"], "to": all.last!["timestamp"], "limit": .number(1)]
+        let expected = all.filter { $0["timestamp"].stringValue! < all.last!["timestamp"].stringValue! }.map { $0["id"] }
+        XCTAssertGreaterThan(expected.count, 1)
+        var found: [JSONValue] = []
+        for _ in 0..<all.count {
+            let page = try store.execute("search", params: params, context: agent)
+            XCTAssertLessThanOrEqual(page["results"].arrayValue.count, 1)
+            found += page["results"].arrayValue.map { $0["id"] }
+            guard let next = page["next_cursor"].stringValue else { break }
+            params["cursor"] = .string(next)
+        }
+        XCTAssertEqual(found, expected)
+        params["cursor"] = nil
+        params["query"] = .string("phase end")
+        params["limit"] = .number(100)
+        let matching = try store.execute("search", params: params)["results"].arrayValue
+        XCTAssertFalse(matching.isEmpty)
+        XCTAssertTrue(matching.allSatisfy { $0["phase"] == .string("end") })
+        params["from"] = .string("now")
+        XCTAssertThrowsError(try store.execute("search", params: params))
+    }
+
+    func testOpenHistoryPaginationExcludesCallsRecordedAfterFirstPage() throws {
+        let (store, space, agent) = try fixture()
+        for i in 0..<2 {
+            _ = try store.execute("read", params: ["kind": .string("spaces"), "_mio_interaction": metadata("before-page-\(i)")], context: agent)
+        }
+        let before = try events(store).sorted {
+            ($0["timestamp"].stringValue!, $0["id"].stringValue!) < ($1["timestamp"].stringValue!, $1["id"].stringValue!)
+        }.map { $0["id"] }
+        var params: [String: JSONValue] = ["query": .string(""), "scope": .string("history"), "space_ids": .array([space]),
+            "from": .string("2000-01-01T00:00:00Z"), "limit": .number(1)]
+        XCTAssertEqual(before.count, 4)
+        var found: [JSONValue] = []
+        for i in before.indices {
+            let page = try store.execute("search", params: params, context: agent)
+            found += page["results"].arrayValue.map { $0["id"] }
+            params["cursor"] = page["next_cursor"].stringValue.map(JSONValue.string)
+            if i == 0 {
+                _ = try store.execute("read", params: ["kind": .string("spaces"), "_mio_interaction": metadata("during-pagination")], context: agent)
+            }
+        }
+        XCTAssertEqual(found, before)
+        XCTAssertNil(params["cursor"])
+    }
+
+    func testInvalidHistoryArgumentsRecordFieldWithoutRejectedValue() throws {
+        let (store, _, agent) = try fixture()
+        for field in ["from", "as_of", "cursor"] {
+            let rejected = "INVALID_HISTORY_\(UUID().uuidString)"
+            let issue = JSONValue.object(["field": .string(field), "reason": .string("invalid_value")])
+            var params: [String: JSONValue] = ["query": .string(""), "scope": .string("history"),
+                "from": .string("2000-01-01T00:00:00Z"), "_mio_interaction": metadata("bad-\(field)")]
+            params[field] = .string(rejected)
+            XCTAssertThrowsError(try store.execute("search", params: params, context: agent)) { error in
+                XCTAssertEqual((error as? MioError)?.code, "invalid_params")
+                XCTAssertEqual((error as? MioError)?.details["argument_errors"], .array([issue]))
+            }
+            let trace = try events(store).filter { $0["argument_errors"] == .array([issue]) }
+            XCTAssertEqual(trace.count, 1)
+            let rows = try store.db.rows("SELECT json FROM entities UNION ALL SELECT json FROM audit")
+            XCTAssertFalse(rows.contains { $0["json"]?.contains(rejected) == true })
+        }
     }
 }

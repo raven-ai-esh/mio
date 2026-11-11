@@ -32,6 +32,7 @@ public final class MioStore: @unchecked Sendable {
         try db.exec("CREATE INDEX IF NOT EXISTS entity_space ON entities(kind,json_extract(json,'$.space_id'))")
         try db.exec("CREATE INDEX IF NOT EXISTS entity_session ON entities(kind,json_extract(json,'$.session_id'))")
         try db.exec("CREATE INDEX IF NOT EXISTS entity_session_page ON entities(kind,json_extract(json,'$.session_id'),json_extract(json,'$.timestamp'),json_extract(json,'$.source_sequence'),json_extract(json,'$.source_id'),id)")
+        try db.exec("CREATE INDEX IF NOT EXISTS history_event_time ON entities(\(Self.historyTimeSQL("json")),id) WHERE kind='event'")
         try db.exec("CREATE INDEX IF NOT EXISTS entity_state ON entities(kind,json_extract(json,'$.state'))")
         try db.exec("CREATE INDEX IF NOT EXISTS local_memory_sessions ON entities(kind,json_extract(json,'$.source'),json_extract(json,'$.session_state'),json_extract(json,'$.owner_device_id'))")
         try db.exec("CREATE INDEX IF NOT EXISTS entity_note ON entities(kind,json_extract(json,'$.note_id'))")
@@ -91,22 +92,32 @@ public final class MioStore: @unchecked Sendable {
             }
         }
         do {
-            let semantic=try prepareSearchEncoding(method,params,context)
+            let prepared = try prepareSearchEncoding(method, params, context)
             try Task.checkCancellation()
             activeInteractionID = call?.id
             defer { activeInteractionID = nil }
-            let result = try perform(method,params:params,context:context,interaction:call,semantic:semantic)
+            let result = try perform(method, params: params, context: context, interaction: call,
+                                     semantic: prepared?.result, queryEncodingMS: prepared?.milliseconds ?? 0)
             if let call { cacheInteractionReply(call.id,.success(result)) }
             return result
         } catch {
             let error:Error = error is CancellationError ? MioError("cancelled","The memory request was cancelled"):error
+            let failure = error as? MioError
             if let call, let access = authenticatedAccess, try entity("interaction",call.id)?["end_event_id"].stringValue == nil {
-                try db.transaction { try finishInteraction(call,scope:access,method:method,result:.null,errorCode:(error as? MioError)?.code ?? "operation_failed") }
+                try db.transaction {
+                    try finishInteraction(call, scope: access, method: method, result: .null,
+                                          errorCode: failure?.code ?? "operation_failed",
+                                          errorDetails: failure?.details ?? .null)
+                }
             }
-            if let call { let failure = error as? MioError ?? MioError("operation_failed",error.localizedDescription); cacheInteractionReply(call.id,.failure(failure)) }
-            if (error as? MioError)?.code != "revision_conflict" {
+            if let call { cacheInteractionReply(call.id,.failure(failure ?? MioError("operation_failed",error.localizedDescription))) }
+            if failure?.code != "revision_conflict" {
                 let actor = (try? scope(context).actor) ?? "unauthorized"
-                let audit: JSONValue = .object(["id":.string(UUID().uuidString.lowercased()),"timestamp":.string(now()),"actor":.string(actor),"device_id":.string(deviceID),"method":.string(method),"request":auditRequest(params),"outcome":.string("error"),"error_code":.string((error as? MioError)?.code ?? "operation_failed")])
+                var safeParams = params
+                for issue in Self.safeArgumentErrors(failure?.details["argument_errors"] ?? .null) {
+                    if let field = issue["field"].stringValue { safeParams.removeValue(forKey: field) }
+                }
+                let audit: JSONValue = .object(["id":.string(UUID().uuidString.lowercased()),"timestamp":.string(now()),"actor":.string(actor),"device_id":.string(deviceID),"method":.string(method),"request":auditRequest(safeParams),"outcome":.string("error"),"error_code":.string(failure?.code ?? "operation_failed")])
                 try? db.transaction { try db.exec("INSERT INTO audit VALUES(?,?)",[audit["id"].stringValue!,try encode(audit)]) }
             }
             throw error
@@ -118,7 +129,7 @@ public final class MioStore: @unchecked Sendable {
         interactionReplies[id] = reply
         while interactionReplyOrder.count > 32 { interactionReplies.removeValue(forKey:interactionReplyOrder.removeFirst()) }
     }
-    func perform(_ method: String, params: [String: JSONValue], context: AccessContext, interaction: InteractionAttempt? = nil, semantic:Result<MioSemanticQuery,MioError>? = nil) throws -> JSONValue {
+    func perform(_ method: String, params: [String: JSONValue], context: AccessContext, interaction: InteractionAttempt? = nil, semantic:Result<MioSemanticQuery,MioError>? = nil, queryEncodingMS: Double = 0) throws -> JSONValue {
         let result: JSONValue = try db.transaction {
             let access = try scope(context)
             try authorizeMethod(method, params, access)
@@ -137,14 +148,26 @@ public final class MioStore: @unchecked Sendable {
 
             }
             var result = try dispatch(method, params, access,semantic:semantic)
+            if method == "search" {
+                var values = result.objectValue
+                var timing = result["search_timing_ms"].objectValue
+                timing["query_encoding"] = .number(queryEncodingMS)
+                values["search_timing_ms"] = .object(timing)
+                result = .object(values)
+            }
             if isMutation(method) {
                 var values = result.objectValue
                 values["receipt"] = .object(["status": .string("local_committed"), "operation_id": .string(UUID().uuidString.lowercased()), "committed_at": .string(now()), "cloud_status": .string(["profile.create","profile.revoke","sync.ack","sync.queue","search.rebuild"].contains(method) ? "not_applicable" : "pending")])
                 result = .object(values)
             }
-            if let interaction { result = responseWithTrace(result,call:interaction,replayed:false); try finishInteraction(interaction,scope:access,method:method,result:result,errorCode:result["_error"].stringValue) }
+            if let interaction {
+                result = responseWithTrace(result, call: interaction, replayed: false)
+                try finishInteraction(interaction, scope: access, method: method, result: result,
+                                      errorCode: result["_error"].stringValue, searchParams: method == "search" ? params : nil)
+            }
             if !idem.isEmpty { var cached = result.objectValue; if method == "profile.create" { cached.removeValue(forKey:"token") }; try db.exec("INSERT INTO idempotency VALUES(?,?,?)", [key, fingerprint, try encode(.object(cached))]) }
-            let audit: JSONValue = .object(["id": .string(UUID().uuidString.lowercased()), "timestamp": .string(now()), "actor": .string(access.actor), "device_id":.string(deviceID), "method": .string(method), "request":auditRequest(params), "result_refs":auditRefs(result), "space_ids": .array(access.readable.sorted().map(JSONValue.string)), "result_ids": resultIDs(result), "outcome": .string(result["_error"].stringValue == nil ? "success" : "conflict")])
+            let searchedSpaces = method == "search" ? try interactionSpaces(method, params, access) : access.readable
+            let audit: JSONValue = .object(["id": .string(UUID().uuidString.lowercased()), "timestamp": .string(now()), "actor": .string(access.actor), "device_id":.string(deviceID), "method": .string(method), "request":auditRequest(params), "result_refs":auditRefs(result), "space_ids": .array(searchedSpaces.sorted().map(JSONValue.string)), "result_ids": resultIDs(result), "outcome": .string(result["_error"].stringValue == nil ? "success" : "conflict")])
             if !["snapshot","diagnostics","replica.export","replica.record","replica.merge","sync.pending","sync.status","sync.inventory","sync.ack","sync.queue"].contains(method) { try db.exec("INSERT INTO audit VALUES(?,?)", [audit["id"].stringValue!, try encode(audit)]) }
             return result
         }
