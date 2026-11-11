@@ -12,15 +12,22 @@ root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
 parser.add_argument('--debug', action='store_true')
 parser.add_argument('--dmg', action='store_true')
+parser.add_argument('--build-number', type=int, default=15, help='Local CFBundleVersion')
+parser.add_argument('--scratch-path', type=Path, help='Use a separate SwiftPM build directory')
 args = parser.parse_args()
+if args.build_number < 1:
+    parser.error('--build-number must be positive')
 configuration = 'debug' if args.debug else 'release'
 runtime_build = Path.home() / 'Library/Caches/app.mio.memory/embedding-runtime-build'
 subprocess.run(['xcodebuild', '-scheme', 'MioEmbedWorker', '-configuration', 'Release',
                 '-destination', 'platform=macOS,arch=arm64', '-derivedDataPath', str(runtime_build),
                 '-disableAutomaticPackageResolution', 'build'], cwd=root / 'Vendor/EmbeddingGemma2Swift', check=True)
 native_products = runtime_build / 'Build/Products/Release'
-subprocess.run(['swift', 'build', '-c', configuration], cwd=root, check=True)
-bin_dir = Path(subprocess.check_output(['swift', 'build', '-c', configuration, '--show-bin-path'], cwd=root, text=True).strip())
+build = ['swift', 'build', '-c', configuration]
+if args.scratch_path is not None:
+    build += ['--scratch-path', str(args.scratch_path.resolve())]
+subprocess.run(build, cwd=root, check=True)
+bin_dir = Path(subprocess.check_output(build + ['--show-bin-path'], cwd=root, text=True).strip())
 dist = root / 'dist'
 dist.mkdir(exist_ok=True)
 # Assemble/sign outside iCloud-managed Documents. The provider can immediately
@@ -55,7 +62,7 @@ info = {
     'CFBundleName': 'Mio', 'CFBundleDisplayName': 'Mio',
     'CFBundleIdentifier': 'app.mio.memory', 'CFBundleExecutable': 'Mio',
     'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': '0.5.3',
-    'CFBundleVersion': '15', 'LSMinimumSystemVersion': '15.0',
+    'CFBundleVersion': str(args.build_number), 'LSMinimumSystemVersion': '15.0',
     'CFBundleDevelopmentRegion': 'en', 'CFBundleLocalizations': ['en', 'ru'],
     'NSHighResolutionCapable': True, 'NSPrincipalClass': 'NSApplication',
     'CFBundleIconFile': 'AppIcon',

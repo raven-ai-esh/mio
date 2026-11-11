@@ -404,3 +404,13 @@
 "The space moved during the drag. Try again." = "The space moved during the drag. Try again.";
 "The insertion position changed. Try again." = "The insertion position changed. Try again.";
 "A space cannot be nested inside itself or its descendants" = "A space cannot be nested inside itself or its descendants";
+"3D-граф недоступен на этом Mac" = "The 3D graph is unavailable on this Mac";
+"3D-граф памяти" = "3D memory graph";
+"Перетащите, чтобы повернуть карту. Shift и перетаскивание — перемещение. Прокрутка или щипок — масштаб." = "Drag to rotate. Shift-drag to pan. Scroll or pinch to zoom.";
+"%@ точек · %@ связей" = "%@ points · %@ links";
+"Не удалось построить 3D-карту" = "Could not build the 3D map";
+"На 3D-карте %@ из %@ заметок" = "%@ of %@ notes on the 3D map";
+"На 3D-карте пока нет заметок" = "No notes on the 3D map yet";
+"Точки появятся после семантической индексации." = "Points appear after semantic indexing.";
+"Открыть настройки" = "Open Settings";
+"Перетащите, чтобы повернуть карту" = "Drag to rotate";

@@ -3,7 +3,8 @@ import SwiftUI
 import MioCore
 
 @MainActor final class GraphWorkspaceModel: ObservableObject {
-    enum Mode: String { case memory, history }
+    enum Mode: String { case memory, semantic, history }
+    let semantic = SemanticGraphModel()
     @Published var mode: Mode = .memory
     @Published private(set) var nodes = [MemoryGraphNode]()
     @Published private(set) var edges = [MemoryGraphEdge]()
@@ -36,6 +37,7 @@ import MioCore
     private var layoutGeneration = 0
     private var layoutTask: Task<GraphLayoutResult,Error>?
     private var layoutCache = [String:GraphLayoutResult]()
+    private var semanticInspectionNode: MemoryGraphNode?
     private var detailGeneration = 0
     var selectionGeneration: Int { detailGeneration }
     private var sessionGeneration = 0
@@ -77,13 +79,22 @@ import MioCore
     }
     func updateGraph(notes: [JSONValue], links: [JSONValue], force: Bool = false) {
         // Playback is a saved view: background agent calls don't move its map.
-        guard mode == .memory || force else { return }
+        guard mode != .history || force else { return }
         let newNodes = notes.map(MemoryGraphNode.init).sorted { $0.id < $1.id }, ids = Set(newNodes.map(\.id))
         let newEdges = links.map(MemoryGraphEdge.init).filter { ids.contains($0.from) && ids.contains($0.to) }.sorted { $0.id < $1.id }
         if nodes != newNodes { nodes = newNodes }
         if edges != newEdges { edges = newEdges }
         fileOwners = [:]
         for note in notes { for file in note["file_ids"].items { fileOwners[file.text] = note.id } }
+        if mode == .semantic {
+            if calculating {
+                layoutTask?.cancel()
+                layoutGeneration += 1
+                topology = ""
+                calculating = false
+            }
+            return
+        }
         let signature = MemoryGraphLayout.signature(nodes:newNodes,edges:newEdges)
         guard signature != topology || !layoutFailure.isEmpty else { return }
         topology = signature; layoutTask?.cancel(); layoutGeneration += 1
@@ -107,10 +118,21 @@ import MioCore
             }
         }
     }
+    func refreshNotes(using model: AppModel) async {
+        updateGraph(notes: model.allNotes, links: model.links)
+        guard mode == .semantic, showInspector, !selectedNodeID.isEmpty else { return }
+        guard let current = nodes.first(where: { $0.id == selectedNodeID }) else {
+            dismissInspector()
+            return
+        }
+        if current != semanticInspectionNode { await inspect(current.id, using: model) }
+    }
+
     func inspect(_ id: String, using model: AppModel) async {
         pause(); selectedNodeID = id; showInspector = true; detail = .null; detailLoading = true; detailFailure = ""
         detailGeneration += 1
         let generation = detailGeneration
+        semanticInspectionNode = mode == .semantic ? nodes.first { $0.id == id } : nil
         let revision = mode == .history ? steps.prefix(stepIndex).reversed().compactMap { $0.revision(for:id) }.first : nil
         inspectionRevisionID = revision ?? ""
         var params: [String:JSONValue] = ["kind":.string("note"),"id":.string(id)]
@@ -124,15 +146,16 @@ import MioCore
             detailLoading = false; detailFailure = error.localizedDescription
         }
     }
-    func dismissInspector() { showInspector = false; selectedNodeID = ""; detailGeneration += 1; detail = .null; detailLoading = false; detailFailure = "" }
+    func dismissInspector() { semanticInspectionNode = nil; showInspector = false; selectedNodeID = ""; detailGeneration += 1; detail = .null; detailLoading = false; detailFailure = "" }
     func invalidatePurgedSources(_ ids: Set<String>) {
         guard !ids.isEmpty else { return }
         purgedSourceIDs.formUnion(ids)
+        semantic.invalidatePurgedSources(ids)
         if ids.contains(selectedNodeID) { dismissInspector() }
         nodes.removeAll { ids.contains($0.id) }; edges.removeAll { ids.contains($0.from) || ids.contains($0.to) }
     }
     func loadMoreLinks(using model: AppModel) async {
-        guard mode == .memory, detail["links_next_offset"] != .null else { return }
+        guard mode != .history, detail["links_next_offset"] != .null else { return }
         let id = selectedNodeID, generation = detailGeneration, revision = detail["revision_id"]
         do {
             let page = try await model.execute("read",["kind":.string("note"),"id":.string(id),"offset":detail["links_next_offset"]])
@@ -196,8 +219,8 @@ import MioCore
     }
     func changeMode(using model: AppModel) {
         pause(); dismissInspector()
-        if mode == .memory { sessionGeneration += 1; sessionLoading = false; updateGraph(notes:model.allNotes,links:model.links,force:true) }
-        else { updateGraph(notes:model.allNotes,links:model.links,force:true) }
+        if mode != .history { sessionGeneration += 1; sessionLoading = false }
+        updateGraph(notes:model.allNotes,links:model.links,force:true)
     }
     func shutdown() { pause(); layoutTask?.cancel(); detailGeneration += 1; sessionGeneration += 1; layoutGeneration += 1 }
 }

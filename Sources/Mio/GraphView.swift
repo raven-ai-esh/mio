@@ -21,13 +21,17 @@ struct GraphWorkspace: View {
             if !graph.nodeQuery.isEmpty { searchMatches; Divider() }
             if graph.mode == .history { sessionBar; Divider() }
             HStack(spacing:0) {
-                ZStack {
-                    GraphCanvas(localizer:model.localizer,nodes:graph.displayNodes,edges:graph.edges,positions:graph.displayPositions,colors:colors,selected:graph.selectedNodeID,history:graph.mode == .history,highlights:graph.highlights,focusedSpaceIDs:graph.effectiveFocusedSpaceIDs,fitToken:graph.fitToken,zoomCommand:graph.zoomCommand) { id in Task { await graph.inspect(id,using:model) } }
-                    if graph.nodes.isEmpty && !graph.calculating {
-                        EmptyMemoryView(symbol:"point.3.connected.trianglepath.dotted",title:model.l("Граф появится вместе с памятью"),detail:model.l("Добавьте заметки или подключите другое пространство."))
+                if graph.mode == .semantic {
+                    SemanticGraphView(graph: graph, semantic: graph.semantic, colors: colors)
+                } else {
+                    ZStack {
+                        GraphCanvas(localizer:model.localizer,nodes:graph.displayNodes,edges:graph.edges,positions:graph.displayPositions,colors:colors,selected:graph.selectedNodeID,history:graph.mode == .history,highlights:graph.highlights,focusedSpaceIDs:graph.effectiveFocusedSpaceIDs,fitToken:graph.fitToken,zoomCommand:graph.zoomCommand) { id in Task { await graph.inspect(id,using:model) } }
+                        if graph.nodes.isEmpty && !graph.calculating {
+                            EmptyMemoryView(symbol:"point.3.connected.trianglepath.dotted",title:model.l("Граф появится вместе с памятью"),detail:model.l("Добавьте заметки или подключите другое пространство."))
+                        }
+                        if graph.calculating { VStack { HStack { ProgressView().controlSize(.small); Text(model.l("Расположение узлов…")).font(.caption); Spacer() }.padding(14); Spacer() }.allowsHitTesting(false) }
+                        if !graph.layoutFailure.isEmpty { VStack { Text(graph.layoutFailure).foregroundStyle(.orange); Button(model.l("Повторить расчёт")) { graph.updateGraph(notes:model.allNotes,links:model.links,force:true) } }.padding().background(.regularMaterial,in:RoundedRectangle(cornerRadius:12)) }
                     }
-                    if graph.calculating { VStack { HStack { ProgressView().controlSize(.small); Text(model.l("Расположение узлов…")).font(.caption); Spacer() }.padding(14); Spacer() }.allowsHitTesting(false) }
-                    if !graph.layoutFailure.isEmpty { VStack { Text(graph.layoutFailure).foregroundStyle(.orange); Button(model.l("Повторить расчёт")) { graph.updateGraph(notes:model.allNotes,links:model.links,force:true) } }.padding().background(.regularMaterial,in:RoundedRectangle(cornerRadius:12)) }
                 }
                 if graph.showInspector {
                     Divider()
@@ -46,7 +50,7 @@ struct GraphWorkspace: View {
         }
         .onAppear { graph.purgedSourceTitle = model.l("Очищенный источник"); synchronizeSpaces(); graph.updateGraph(notes:model.allNotes,links:model.links) }
         .onChange(of:model.preferences.interfaceLanguage) { _,_ in graph.purgedSourceTitle = model.l("Очищенный источник") }
-        .onChange(of:model.snapshot["notes"]) { _,_ in graph.updateGraph(notes:model.allNotes,links:model.links) }
+        .onChange(of:model.snapshot["notes"]) { _,_ in Task { await graph.refreshNotes(using:model) } }
         .onChange(of:model.snapshot["links"]) { _,_ in graph.updateGraph(notes:model.allNotes,links:model.links) }
         .onChange(of:model.snapshot["spaces"]) { _,_ in synchronizeSpaces() }
         .onChange(of:model.selectedSpace) { _,_ in synchronizeSpaces() }
@@ -58,7 +62,11 @@ struct GraphWorkspace: View {
             HStack {
                 Text(model.l("Граф памяти")).font(.title2.weight(.semibold))
                 Spacer()
-                Picker(model.l("Режим графа"),selection:$graph.mode) { Text(model.l("Память")).tag(GraphWorkspaceModel.Mode.memory); Text(model.l("История MCP")).tag(GraphWorkspaceModel.Mode.history) }.labelsHidden().pickerStyle(.segmented).frame(width:215).accessibilityIdentifier("graph.mode")
+                Picker(model.l("Режим графа"), selection: $graph.mode) {
+                    Text("2D").tag(GraphWorkspaceModel.Mode.memory)
+                    Text("3D").tag(GraphWorkspaceModel.Mode.semantic)
+                    Text(model.l("История MCP")).tag(GraphWorkspaceModel.Mode.history)
+                }.labelsHidden().pickerStyle(.segmented).frame(width: 245).accessibilityIdentifier("graph.mode")
                 Button { graph.zoomCommand -= 1 } label: { Image(systemName:"minus.magnifyingglass") }.accessibilityLabel(model.l("Уменьшить граф"))
                 Button { graph.zoomCommand += 1 } label: { Image(systemName:"plus.magnifyingglass") }.accessibilityLabel(model.l("Увеличить граф"))
                 Button { graph.fitToken += 1 } label: { Image(systemName:"arrow.up.left.and.arrow.down.right") }.help(model.l("Показать весь граф")).accessibilityIdentifier("graph.fit")
@@ -69,6 +77,7 @@ struct GraphWorkspace: View {
                 SpaceFilterControl(selectedSpaceIDs:graph.focusedSpaceIDs,accessibilityPrefix:"graph.spaceFilter",setSelected:{ id,selected in if graph.focusedSpaceIDs.contains(id) != selected { graph.toggleSpaceFocus(id) } },reset:graph.showAllSpaces)
                 Spacer()
                 if graph.mode == .history { Label(model.l("Пунктир — порядок чтений"),systemImage:"arrow.right").font(.caption).foregroundStyle(.orange) }
+                else if graph.mode == .semantic { Text(model.l("Перетащите, чтобы повернуть карту")).font(.caption).foregroundStyle(.secondary) }
                 else { Text(model.l("Группы определяются связями")).font(.caption).foregroundStyle(.secondary) }
             }
         }.padding(18)
@@ -191,7 +200,7 @@ struct GraphInspectorView: View {
             ForEach(observedLinks) { edge in
                 Button { Task { await graph.inspect(edge["note"].id,using:model) } } label: { HStack(alignment:.top) { Image(systemName:edge["direction"].text == "incoming" ? "arrow.down.left":"arrow.up.right"); Text(graph.purgedSourceIDs.contains(edge["note"].id) ? model.l("Очищенный источник"):graph.displayNodes.first{$0.id==edge["note"].id}?.title ?? String(edge["note"].id.prefix(12))).lineLimit(3); Spacer() } }.buttonStyle(.plain).font(.caption)
             }
-            if graph.mode == .memory && note["links_next_offset"] != .null { Button(model.l("Ещё связи")) { Task { await graph.loadMoreLinks(using:model) } }.font(.caption) }
+            if graph.mode != .history && note["links_next_offset"] != .null { Button(model.l("Ещё связи")) { Task { await graph.loadMoreLinks(using:model) } }.font(.caption) }
             if !note["source_ids"].items.isEmpty {
                 Divider(); Text(model.l("Источники")).font(.callout.weight(.semibold))
                 ForEach(note["source_ids"].items.map(\.text),id:\.self) { source in Button(String(source.prefix(48))) { openSource(.string(source)) }.font(.caption).lineLimit(2) }

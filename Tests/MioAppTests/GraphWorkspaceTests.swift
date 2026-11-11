@@ -32,6 +32,40 @@ import AppKit
         XCTAssertTrue(model.graph.detailFailure.isEmpty); XCTAssertEqual(model.graph.detail["body"].text,"full selected A")
         XCTAssertEqual(model.tab,"graph")
     }
+    func testSemanticInspectorFollowsSelectedNoteRevision() async throws {
+        let space = try await model.execute("space.create", ["name": .string("Graph")])["id"]
+        let note = try await model.execute("note.create", [
+            "space_id": space, "title": .string("Selected"), "body": .string("before")
+        ])
+        let linked = try await model.execute("note.create", [
+            "space_id": space, "title": .string("Linked"), "body": .string("A related note")
+        ])
+        await model.refresh()
+        let graph = model.graph
+        graph.mode = .semantic
+        await graph.refreshNotes(using: model)
+        await graph.inspect(note.id, using: model)
+        XCTAssertEqual(graph.detail["body"], .string("before"))
+
+        let update = try await model.execute("note.update", [
+            "note_id": .string(note.id), "expected_revision": note["revision_id"], "body": .string("after [[Linked]]")
+        ])
+        await model.refresh()
+        // The link notification can update graph metadata before the note task runs.
+        graph.updateGraph(notes: model.allNotes, links: model.links)
+        await graph.refreshNotes(using: model)
+        XCTAssertEqual(graph.selectedNodeID, note.id)
+        XCTAssertEqual(graph.detail["body"], .string("after [[Linked]]"))
+        XCTAssertEqual(graph.detail["revision_id"], update["revision_id"])
+        XCTAssertEqual(graph.detail["links"].items.first?["note"].id, linked.id)
+
+        _ = try await model.execute("note.delete", ["note_id": .string(note.id)])
+        await model.refresh()
+        await graph.refreshNotes(using: model)
+        XCTAssertFalse(graph.showInspector)
+        XCTAssertTrue(graph.selectedNodeID.isEmpty)
+    }
+
     func testNativeDrawingIncludesAllNodesEdgesAndHitCoordinates() throws {
         let view = MemoryGraphCanvasView(frame:CGRect(x:0,y:0,width:1100,height:700))
         view.nodes = (0..<1300).map{MemoryGraphNode(id:"n\($0)",title:"Node \($0)")}
