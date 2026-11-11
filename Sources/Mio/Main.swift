@@ -6,6 +6,18 @@ import MioBridge
 @main enum MioEntrypoint {
     static func main() {
         let args = CommandLine.arguments
+        if args.dropFirst().elementsEqual(["--daily-review"]) {
+            let storage = DailyReviewStorage(directory: MioPaths.directory)
+            let agent = DailyReviewLaunchAgent(storage: storage, appExecutable: MioPaths.executable)
+            do {
+                try DailyReviewRunner(storage: storage, launchAgent: agent).runIfDue(
+                    launchedByScheduler: ProcessInfo.processInfo.environment["MIO_REVIEW_SCHEDULED"] == "1")
+            } catch {
+                FileHandle.standardError.write(Data((error.localizedDescription + "\n").utf8))
+                exit(1)
+            }
+            return
+        }
         if args.contains("--mcp") || args.contains("--rpc") {
             do {
                 let runtime = MioPaths.runtime

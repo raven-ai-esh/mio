@@ -138,6 +138,7 @@ struct SettingsView: View {
                 Text(model.l("Mio записывает начало и окончание обращений агента, их исход и связанные изменения памяти."))
                 Button(model.l("Показать журнал")) { model.tab = "history" }
             }
+            DailyReviewSettingsView()
             Section(model.l("Приложение")) {
                 Text(model.l("Закрытие окна сохраняет обслуживание агента. Команда «Выйти из Mio» завершает процесс; следующий запрос адаптера запускает его снова.")).foregroundStyle(.secondary)
             }

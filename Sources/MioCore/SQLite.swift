@@ -7,9 +7,16 @@ final class SQLite {
     private(set) var returnedRowCount = 0
     private var handle: OpaquePointer?
     private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-    init(path: String) throws {
-        guard sqlite3_open_v2(path, &handle, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else { throw MioError("database_open", "Cannot open Mio database") }
+    init(path: String, readOnly: Bool = false) throws {
+        let mode = readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE
+        var connection: OpaquePointer?
+        guard sqlite3_open_v2(path, &connection, mode | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+            sqlite3_close_v2(connection)
+            throw MioError("database_open", "Cannot open Mio database")
+        }
+        handle = connection
         sqlite3_busy_timeout(handle, 5000)
+        if readOnly { return }
         try exec("PRAGMA journal_mode=WAL")
         try exec("PRAGMA synchronous=FULL")
         try exec("PRAGMA foreign_keys=ON")

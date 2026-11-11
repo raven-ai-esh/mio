@@ -15,10 +15,12 @@ public final class MioStore: @unchecked Sendable {
     var semanticQueryEncoder: ((String) throws -> MioSemanticQuery)?
     var retrievalMode: MioRetrievalMode = .hybrid
     var sourceImageRenderer: ((JSONValue,Data,JSONValue) throws -> Data)?
+    static let databaseName = "mio.sqlite"
+
     public init(directory: URL) throws {
         self.directory = directory
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        self.db = try SQLite(path: directory.appendingPathComponent("mio.sqlite").path)
+        self.db = try SQLite(path: directory.appendingPathComponent(Self.databaseName).path)
         try db.exec("CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
         let previous = try db.rows("SELECT value FROM metadata WHERE key='schema'").first?["value"]
         if let previous, !["1","2"].contains(previous) { throw MioError("schema_incompatible", "This database requires a different Mio version") }
