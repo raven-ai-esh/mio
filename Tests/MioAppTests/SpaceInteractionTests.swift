@@ -70,6 +70,24 @@ import MioCore
         XCTAssertNotNil(cell.imageView);XCTAssertNotNil(cell.textField)
         XCTAssertFalse(cell.draggingImageComponents.isEmpty,"Native row must supply a real drag preview")
     }
+    func testNativeOutlineDoesNotRetileDuringLayout() {
+        let view = SpaceOutlineView(frame: NSRect(x: 0, y: 0, width: 220, height: 100))
+        view.columnAutoresizingStyle = .noColumnAutoresizing
+        let column = NSTableColumn(identifier: .init("space"))
+        column.width = 110
+        view.addTableColumn(column)
+        view.outlineTableColumn = column
+        view.layout()
+        XCTAssertEqual(column.width, 110, "Do not retile an AppKit table inside the active layout pass")
+
+        let host = SpaceOutlineHost(outline: view)
+        host.frame.size = NSSize(width: 240, height: 100)
+        host.layoutSubtreeIfNeeded()
+        XCTAssertTrue(view.enclosingScrollView === host)
+        XCTAssertEqual(host.contentSize.width, 240, accuracy: 1)
+        XCTAssertFalse(host.hasVerticalScroller, "The containing sidebar scrolls the outline")
+    }
+
     func testUnchangedIndexerStatusDoesNotInvalidateNativeWorkspace() async throws {
         await model.refreshIndexing()
         var notifications=0

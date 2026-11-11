@@ -16,7 +16,7 @@ struct SpacesOutline: NSViewRepresentable {
     @EnvironmentObject var model: AppModel
     @Binding var height: CGFloat
     func makeCoordinator() -> Coordinator { Coordinator(model:model,height:$height) }
-    func makeNSView(context: Context) -> SpaceOutlineView {
+    func makeNSView(context: Context) -> SpaceOutlineHost {
         let view=SpaceOutlineView(),column=NSTableColumn(identifier:.init("space"))
         view.addTableColumn(column);view.outlineTableColumn=column;view.headerView=nil
         view.style = .sourceList;view.backgroundColor = .clear
@@ -29,11 +29,11 @@ struct SpacesOutline: NSViewRepresentable {
         view.setDraggingSourceOperationMask([],forLocal:false)
         view.registerForDraggedTypes([.init(MioSpaceDrag.typeID),.init(MioNoteDrag.typeID)])
         view.setAccessibilityIdentifier("spaces.outline")
-        return view
+        return SpaceOutlineHost(outline: view)
     }
-    func updateNSView(_ view: SpaceOutlineView, context: Context) {
+    func updateNSView(_ host: SpaceOutlineHost, context: Context) {
         context.coordinator.model=model;context.coordinator.height=$height
-        context.coordinator.update(view)
+        context.coordinator.update(host.outline)
     }
 
     final class Item: NSObject {
@@ -198,12 +198,33 @@ struct SpacesOutline: NSViewRepresentable {
     }
 }
 
+/// Keep the table a native document view. SwiftUI resizes the scroll view,
+/// and AppKit manages the outline's column and row frames inside its clip view.
+final class SpaceOutlineHost: NSScrollView {
+    let outline: SpaceOutlineView
+
+    init(outline: SpaceOutlineView) {
+        self.outline = outline
+        super.init(frame: .zero)
+        drawsBackground = false
+        borderType = .noBorder
+        hasHorizontalScroller = false
+        hasVerticalScroller = false
+        automaticallyAdjustsContentInsets = false
+        outline.autoresizingMask = [.width]
+        documentView = outline
+    }
+
+    required init?(coder: NSCoder) { return nil }
+
+    override func scrollWheel(with event: NSEvent) {
+        // The SwiftUI sidebar owns scrolling for all of its rows.
+        nextResponder?.scrollWheel(with: event)
+    }
+}
+
 final class SpaceOutlineView: NSOutlineView {
     var contextMenuForItem: ((SpacesOutline.Item)->NSMenu?)?
-    override func layout() {
-        super.layout()
-        if let column=tableColumns.first,abs(column.width-bounds.width)>1 { column.width=max(100,bounds.width) }
-    }
     override func menu(for event: NSEvent) -> NSMenu? {
         let row=row(at:convert(event.locationInWindow,from:nil))
         guard row>=0,let item=item(atRow:row) as? SpacesOutline.Item else { return nil }
