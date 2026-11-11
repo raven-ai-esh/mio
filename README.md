@@ -16,6 +16,13 @@ Mio gives an agent a durable memory of notes, files, sources and connections. Yo
 
 Think linked notes with an agent-facing API: a place for useful context that stays understandable to a person.
 
+## What's new in Mio 0.5.3
+
+1. **Faster scoped search.** Mio counts index coverage in SQLite and reports time spent encoding the query, retrieving keyword matches, loading sources, ranking and counting coverage. Agents can pass `space_ids` to search a specific project. On a synthetic set of 1,600 notes with precomputed embeddings, median search time went from 125 to 44 ms in one 200-note space and from 306 to 236 ms across all spaces.
+2. **Evidence in search results.** Mio flags results supported only by semantic similarity and keeps those candidates visible. MCP clients receive evidence per match and can open the exact source revision before citing it. [MCP search reference](docs/MCP.md#search)
+3. **Searchable MCP history.** New traces record the spaces actually searched. Agents can page through operations by date range, and validation errors identify the affected fields and reasons. [MCP history and errors](docs/MCP.md#receipts-and-history)
+4. **Daily review with your own agent harness.** In **Mio Settings → Daily Mio review**, choose a command and a local Mio checkout, then confirm to enable it. The default schedule is 00:00 in the Mac's current time zone, and you can set another time. A harness configured for unattended use analyzes aggregate activity from the previous scheduled interval, then makes justified local changes and runs tests. [Setup and harness contract](docs/DAILY_REVIEW.md)
+
 ## A memory you can explore
 
 | For your agent | For you |
@@ -34,6 +41,8 @@ Markdown notes, `[[wikilinks]]`, typed relationships, sources and version histor
 ### See the connections
 
 The graph draws the whole memory as lightweight nodes and edges. Click a node to inspect its content in a side panel. Highlight one or several spaces; the rest stays visible and almost transparent.
+
+Switch to **3D** to explore indexed notes positioned by the similarity of their local embeddings. The view shows how many notes have coordinates and lets you inspect the selected note.
 
 ![Mio full graph with a node inspector](docs/media/graph.jpg)
 
