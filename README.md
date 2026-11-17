@@ -16,6 +16,8 @@ Mio gives an agent a durable memory of notes, files, sources and connections. Yo
 
 Think linked notes with an agent-facing API: a place for useful context that stays understandable to a person.
 
+If you find Mio useful, consider [giving it a star on GitHub](https://github.com/raven-ai-esh/mio). Thanks for checking it out!
+
 ## What's new in Mio 0.5.3
 
 1. **Faster scoped search.** Mio counts index coverage in SQLite and reports time spent encoding the query, retrieving keyword matches, loading sources, ranking and counting coverage. Agents can pass `space_ids` to search a specific project. On a synthetic set of 1,600 notes with precomputed embeddings, median search time went from 125 to 44 ms in one 200-note space and from 306 to 236 ms across all spaces.
